@@ -1,0 +1,3 @@
+deploy/dsh-data
+deploy/workspace
+*.tar.gz

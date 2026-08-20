@@ -1,0 +1,25 @@
+name: dsh
+
+services:
+  dsh:
+    image: dsh
+    container_name: dsh-web
+    ports:
+      - "${DSH_PORT:-9090}:9090"
+    volumes:
+      # Harness 主目录：会话、设置、web profile、认证凭据（web-auth.json）。
+      - ./dsh-data:/data
+      # agent 工作区：宿主机目录挂到 /workspace；入口脚本把 HOME 指到它。
+      - ./workspace:/workspace
+    environment:
+      # 模型访问（聊天必需）。
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # 可选：自定义 DeepSeek 兼容端点（默认 https://api.deepseek.com）。
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-}
+      # 浏览器实际访问用的 host:port（域名则不带端口），空格分隔可多个。
+      # 原版 CLI 的 --trusted-host 透传；dsh-web-startup-auth 自身的认证
+      # 不依赖它（远程一律要求登录），但留空可能导致部分检查 403，建议配好。
+      DSH_TRUSTED_HOSTS: ${DSH_TRUSTED_HOSTS:-}
+      # 自定义大模型提供方（JSON 字典，启动时合并进数据卷 settings.yaml）。
+      DSH_LLM_PROVIDERS: ${DSH_LLM_PROVIDERS:-}
+    restart: unless-stopped
