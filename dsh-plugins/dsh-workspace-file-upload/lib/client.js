@@ -176,6 +176,19 @@ window.__ModuleLoader__.load({
       return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
     }
 
+    /** Inline paperclip icon (stroke-based, inherits currentColor). */
+    function PaperclipIcon({ size }) {
+      return React.createElement("svg", {
+        width: size, height: size, viewBox: "0 0 24 24",
+        fill: "none", stroke: "currentColor", strokeWidth: 1.8,
+        strokeLinecap: "round", strokeLinejoin: "round",
+        "aria-hidden": "true", style: { display: "block" },
+      },
+        // Standard paperclip path (feather/lucide style).
+        React.createElement("path", { d: "M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" })
+      );
+    }
+
     function UploadButton(props) {
       const t = props.t;
       const inputRef = React.useRef(null);
@@ -339,7 +352,11 @@ window.__ModuleLoader__.load({
           onDragLeave: () => setDragOver(false),
           onDrop,
           style: buttonStyle,
-        }, busy ? t("button.uploading") : dragOver ? t("button.drop") : t("button.file")),
+        }, busy
+          ? t("button.uploading")
+          : dragOver
+            ? t("button.drop")
+            : React.createElement(PaperclipIcon, { size: 14 })),
         status && React.createElement("span", {
           style: {
             marginLeft: "4px",
@@ -376,12 +393,7 @@ window.__ModuleLoader__.load({
             fontWeight: 600,
             boxShadow: "0 8px 32px rgba(0,0,0,.35)",
           },
-        }, t("drop.overlay"))),
-        React.createElement(UploadedFilesRow, {
-          sessionId: props.sessionId,
-          t,
-          localeSubscribe: props.localeSubscribe,
-        })
+        }, t("drop.overlay")))
       );
     }
 
@@ -744,6 +756,14 @@ window.__ModuleLoader__.load({
         order: 35,
         label: t("slot.uploadLabel"),
       }, (props) => React.createElement(UploadButton, Object.assign({}, props, { t, localeSubscribe }))));
+      // Uploaded-file chips live in the input dock strip (above the input bar,
+      // where the todo plan and queue strips render) instead of inside the
+      // button row, keeping the composer row clean.
+      ctx.slots.inject("conversation.input.dock", () => ctx.slots.register({
+        name: "conversation.input.dock",
+        id: "agent-hub-workspace-file-uploads",
+        order: 10,
+      }, (props) => React.createElement(UploadedFilesRow, Object.assign({}, props, { t, localeSubscribe }))));
       ctx.slots.inject("settings.general.item", () => ctx.slots.register({
         name: "settings.general.item",
         id: "agent-hub-workspace-file-upload-limit",
