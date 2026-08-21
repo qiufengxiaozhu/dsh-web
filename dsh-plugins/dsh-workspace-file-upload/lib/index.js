@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto'
+import { homedir } from 'node:os'
 import { createWriteStream } from 'node:fs'
 import { mkdir, open, unlink, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
-import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -134,6 +136,40 @@ function sameOrigin(req, ctx) {
   } catch {
     return false
   }
+}
+
+/**
+ * 会话隔离的附件存储根。附件刻意放在工作区之外：
+ * dsh 的 fs/bash 沙箱只拦截写、读完全放行（见 dsh-fs-sandbox 的
+ * "Reads pass through untouched" 与 landlock 的 readOnly:["/"），
+ * 留在工作区里的文件任何会话都能 ls 到。移出工作区后，本会话凭
+ * 上传响应里返回的绝对路径照常可读，其他会话既列不到也猜不到
+ * （目录名含工作区哈希）。
+ *
+ * 注意优先用 DSH_HOME 而不是 homedir()：本地启动脚本会把 HOME
+ * 指到工作区目录，homedir() 跟着走会让附件树重新落回工作区里。
+ */
+const UPLOAD_ROOT = process.env.DSH_UPLOAD_ROOT
+  ?? join(process.env.DSH_HOME ?? homedir(), 'workspace-file-upload')
+
+/** 把任意 ID/路径收敛为安全目录段：只留字母数字与 . _ -，截断到 64。 */
+function safeSegment(raw) {
+  const cleaned = String(raw).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 64)
+  return cleaned || 'default'
+}
+
+/**
+ * 工作区 → 稳定目录名。用 sha256 前 16 位避免路径超长/非法字符，
+ * 同时保留 basename 前缀方便人工排查目录归属。
+ */
+function workspaceSegment(workspaceRoot) {
+  const hash = createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 16)
+  return `${safeSegment(basename(workspaceRoot)).slice(0, 32) || 'ws'}-${hash}`
+}
+
+/** 本会话的附件目录：<root>/<workspace-hash>/<sessionId>/。 */
+function sessionUploadDir(workspaceRoot, sessionId) {
+  return resolve(UPLOAD_ROOT, workspaceSegment(workspaceRoot), safeSegment(sessionId))
 }
 
 async function uniqueTarget(directory, requestedName) {
@@ -462,13 +498,12 @@ export function apply(ctx) {
         return
       }
       const workspaceRoot = resolve(workspace)
-      const uploadDirectory = resolve(workspaceRoot, '.agent-hub', 'uploads')
+      // 删除只允许动本会话的私有目录；`path` 为上传时返回的绝对路径。
+      const uploadDirectory = sessionUploadDir(workspaceRoot, sessionId)
       const boundary = `${uploadDirectory}${sep}`
-      // `path` 是相对工作区的路径（如 ".agent-hub/uploads/report.zip"），
-      // 与上传接口返回的值保持一致。
-      const target = resolve(workspaceRoot, uploadPath)
+      const target = resolve(uploadPath)
       if (target !== uploadDirectory && !target.startsWith(boundary)) {
-        answer(res, 400, { ok: false, error: 'The target is outside the uploads directory.' })
+        answer(res, 400, { ok: false, error: 'The target is outside this session\'s uploads directory.' })
         return
       }
       // 删除上传文件本身，加上旁边的解压目录
@@ -535,30 +570,26 @@ export function apply(ctx) {
       }
 
       const workspaceRoot = resolve(workspace)
-      const uploadDirectory = resolve(workspaceRoot, '.agent-hub', 'uploads')
-      const boundary = `${workspaceRoot}${sep}`
-      if (uploadDirectory !== workspaceRoot && !uploadDirectory.startsWith(boundary)) {
-        answer(res, 400, { ok: false, error: 'The upload target is outside the workspace.' })
-        return
-      }
+      // 工作区外的会话私有目录：其他会话在工作区里 ls 不到这些附件。
+      const uploadDirectory = sessionUploadDir(workspaceRoot, sessionId)
 
       let target
       try {
         await mkdir(uploadDirectory, { recursive: true })
         target = await uniqueTarget(uploadDirectory, safeName(requestedName))
         const bytes = await receive(req, target, length, maxBytes)
-        const relativePath = relative(workspaceRoot, target).split(sep).join('/')
-        const zipInfo = await tryExtractZip(target, uploadDirectory, workspaceRoot, {
+        const zipInfo = await tryExtractZip(target, uploadDirectory, uploadDirectory, {
           maxExtractMb,
           maxExtractEntries,
         }, ctx.logger)
         ctx.logger.info(
-          `workspace-file-upload: saved ${bytes} bytes as ${relativePath}`
+          `workspace-file-upload: saved ${bytes} bytes as ${target}`
           + (zipInfo?.kind === 'zip' ? `, extracted to ${zipInfo.extracted ?? '(failed)'}` : ''),
         )
         answer(res, 201, {
           ok: true,
-          path: relativePath,
+          // 绝对路径：附件在工作区外，agent 必须拿到全路径才能读取。
+          path: target,
           bytes,
           ...(zipInfo ?? { kind: 'file' }),
         })
