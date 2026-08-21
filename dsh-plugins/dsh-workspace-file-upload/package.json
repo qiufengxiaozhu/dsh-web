@@ -1,0 +1,54 @@
+{
+  "name": "@agent-hub/dsh-workspace-file-upload",
+  "version": "0.1.0",
+  "description": "Generic file upload compatibility layer for DeepSeek Harness web",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-conversation": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.6",
+    "react": "^18.2.0"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/zip.js",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "file-upload",
+    "zip"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shililinghu/dsh-file-upload-deepseek-harness-plug-in.git"
+  },
+  "homepage": "https://github.com/shililinghu/dsh-file-upload-deepseek-harness-plug-in#readme",
+  "bugs": {
+    "url": "https://github.com/shililinghu/dsh-file-upload-deepseek-harness-plug-in/issues"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,581 @@
+import { createWriteStream } from 'node:fs'
+import { mkdir, open, unlink, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { extractZip, isZipBuffer, ZipExtractError } from './zip.js'
+
+const execFileAsync = promisify(execFile)
+
+export const inject = ['webServer', 'sessions']
+
+const ROUTE = '/agent-hub/file-upload'
+const DELETE_ROUTE = '/agent-hub/file-upload/delete'
+const CONFIG_ROUTE = '/agent-hub/file-upload/config'
+const DEFAULT_MAX_MB = 25
+const MIN_MAX_MB = 1
+const MAX_MAX_MB = 2048
+const DEFAULT_EXTRACT_MB = 4096
+const MIN_EXTRACT_MB = 1
+const MAX_EXTRACT_MB = 64 * 1024
+const DEFAULT_EXTRACT_ENTRIES = 100000
+const MIN_EXTRACT_ENTRIES = 1
+const MAX_EXTRACT_ENTRIES = 10000000
+const CONFIG_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'config.json')
+
+/** Content types we accept as raw binary uploads (parameters are ignored). */
+const ACCEPTED_CONTENT_TYPES = new Set([
+  'application/octet-stream',
+  'application/zip',
+  'application/x-zip-compressed',
+  'application/x-7z-compressed',
+  'application/x-tar',
+  'application/gzip',
+  'application/x-rar-compressed',
+])
+
+/** Clamp an arbitrary value into the valid max-MB range, or undefined. */
+function normalizeMaxMb(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return undefined
+  const clamped = Math.round(number)
+  if (clamped < MIN_MAX_MB || clamped > MAX_MAX_MB) return undefined
+  return clamped
+}
+
+/** Clamp an arbitrary value into the valid extract-MB range, or undefined. */
+function normalizeExtractMb(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return undefined
+  const clamped = Math.round(number)
+  if (clamped < MIN_EXTRACT_MB || clamped > MAX_EXTRACT_MB) return undefined
+  return clamped
+}
+
+/** Clamp an arbitrary value into the valid extract-entries range, or undefined. */
+function normalizeExtractEntries(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return undefined
+  const clamped = Math.round(number)
+  if (clamped < MIN_EXTRACT_ENTRIES || clamped > MAX_EXTRACT_ENTRIES) return undefined
+  return clamped
+}
+
+async function readConfig() {
+  try {
+    const raw = await readFile(CONFIG_PATH, 'utf8')
+    const parsed = JSON.parse(raw)
+    const maxMb = normalizeMaxMb(parsed?.maxUploadMb)
+    const extractMb = normalizeExtractMb(parsed?.maxExtractMb)
+    const extractEntries = normalizeExtractEntries(parsed?.maxExtractEntries)
+    return {
+      maxUploadMb: maxMb !== undefined ? maxMb : DEFAULT_MAX_MB,
+      maxExtractMb: extractMb !== undefined ? extractMb : DEFAULT_EXTRACT_MB,
+      maxExtractEntries: extractEntries !== undefined ? extractEntries : DEFAULT_EXTRACT_ENTRIES,
+    }
+  } catch {
+    // missing or unreadable config falls back to defaults
+  }
+  return {
+    maxUploadMb: DEFAULT_MAX_MB,
+    maxExtractMb: DEFAULT_EXTRACT_MB,
+    maxExtractEntries: DEFAULT_EXTRACT_ENTRIES,
+  }
+}
+
+async function writeConfig(patch) {
+  const current = await readConfig()
+  const next = { ...current, ...patch }
+  await mkdir(dirname(CONFIG_PATH), { recursive: true })
+  await writeFile(CONFIG_PATH, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+  return next
+}
+
+function answer(res, status, body) {
+  const payload = Buffer.from(JSON.stringify(body), 'utf8')
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': payload.length,
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+  })
+  res.end(payload)
+}
+
+function safeName(raw) {
+  const leaf = basename(raw).normalize('NFC')
+  const cleaned = leaf
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
+    .replace(/[. ]+$/g, '')
+    .slice(0, 180)
+  if (!cleaned || cleaned === '.' || cleaned === '..') return 'uploaded-file'
+  return cleaned
+}
+
+/**
+ * Same-origin guard for the upload endpoint. Beyond the loopback host, an
+ * Origin from any host is accepted as long as it is an http(s) URL on the
+ * exact port the web server listens on AND its hostname matches the Host
+ * header of the request itself — a genuinely same-origin page. Cross-site
+ * pages cannot forge that Origin/Host pairing. Remote deployments are
+ * expected to sit behind dsh-web-startup-auth, so requests arriving here
+ * have already been authenticated.
+ */
+function sameOrigin(req, ctx) {
+  const origin = req.headers.origin
+  if (typeof origin !== 'string') return false
+  try {
+    const parsed = new URL(origin)
+    const host = parsed.hostname.toLowerCase()
+    const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1'
+    const portOk = Number(parsed.port) === ctx.webServer.port
+    if (!(parsed.protocol === 'http:' || parsed.protocol === 'https:') || !portOk) return false
+    if (loopback) return true
+    const requestHost = String(req.headers.host ?? '').split(':')[0].toLowerCase()
+    return requestHost !== '' && (host === requestHost || `www.${host}` === requestHost)
+  } catch {
+    return false
+  }
+}
+
+async function uniqueTarget(directory, requestedName) {
+  const extension = extname(requestedName)
+  const stem = requestedName.slice(0, requestedName.length - extension.length) || 'uploaded-file'
+  // Prefer the original name; on collision grow a predictable sequence
+  // (report.zip, report-1.zip, report-2.zip) instead of random suffixes.
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const candidateName = attempt === 0 ? `${stem}${extension}` : `${stem}-${attempt}${extension}`
+    const candidate = join(directory, candidateName)
+    try {
+      const handle = await open(candidate, 'wx')
+      await handle.close()
+      return candidate
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error
+    }
+  }
+  throw new Error('Unable to allocate a unique upload name.')
+}
+
+async function receive(req, target, expectedLength, maxBytes) {
+  let received = 0
+  const output = createWriteStream(target, { flags: 'w' })
+  try {
+    for await (const chunk of req) {
+      received += chunk.length
+      if (received > maxBytes) throw new Error('FILE_TOO_LARGE')
+      if (!output.write(chunk)) await new Promise(resolveDrain => output.once('drain', resolveDrain))
+    }
+    await new Promise((resolveDone, rejectDone) => {
+      output.once('error', rejectDone)
+      output.end(resolveDone)
+    })
+    if (expectedLength !== undefined && received !== expectedLength) throw new Error('INCOMPLETE_UPLOAD')
+    return received
+  } catch (error) {
+    output.destroy()
+    await unlink(target).catch(() => {})
+    throw error
+  }
+}
+
+/**
+ * Inspect a saved upload; if it is a ZIP archive (by magic bytes), extract it
+ * next to itself and describe the result. Returns null for non-ZIP uploads.
+ * @param {{ maxExtractMb: number, maxExtractEntries: number }} limits
+ */
+/**
+ * Fallback extraction using system archive tools, tried only when the
+ * built-in JS reader fails with a structural error (CORRUPT). Real Windows
+ * installers sometimes use methods our minimal reader skips (bzip2, lzma,
+ * zstd…); tar.exe / Expand-Archive handle those natively.
+ *
+ * Candidates, in order: 7z (7-Zip), tar (Windows 10+ ships bsdtar which
+ * reads zip), then PowerShell Expand-Archive.
+ */
+async function extractWithSystemTool(filePath, destination, logger) {
+  const candidates = [
+    { exe: '7z', args: (dir) => ['x', '-y', `-o${dir}`, filePath], kind: '7z' },
+    { exe: 'tar', args: (dir) => ['-xf', filePath, '-C', dir], kind: 'tar' },
+  ]
+  for (const candidate of candidates) {
+    try {
+      await mkdir(destination, { recursive: true })
+      await execFileAsync(candidate.exe, candidate.args(destination), {
+        windowsHide: true,
+        timeout: 10 * 60 * 1000,
+        maxBuffer: 1024 * 1024,
+      })
+      logger?.info?.('workspace-file-upload: system tool fallback succeeded via ' + candidate.kind)
+      return candidate.kind
+    } catch (error) {
+      logger?.warn?.(`workspace-file-upload: ${candidate.kind} fallback failed: ${error?.message ?? error}`)
+      await rm(destination, { recursive: true, force: true }).catch(() => {})
+    }
+  }
+  // Last resort: PowerShell Expand-Archive (always present on Windows).
+  try {
+    await mkdir(destination, { recursive: true })
+    const script = `Expand-Archive -LiteralPath '${filePath.replace(/'/g, "''")}' -DestinationPath '${destination.replace(/'/g, "''")}' -Force`
+    await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      windowsHide: true,
+      timeout: 10 * 60 * 1000,
+      maxBuffer: 1024 * 1024,
+    })
+    logger?.info?.('workspace-file-upload: system tool fallback succeeded via powershell Expand-Archive')
+    return 'powershell'
+  } catch (error) {
+    logger?.warn?.(`workspace-file-upload: powershell fallback failed: ${error?.message ?? error}`)
+    await rm(destination, { recursive: true, force: true }).catch(() => {})
+    return null
+  }
+}
+
+/** Recursively list relative paths + total bytes under a directory. */
+async function describeExtracted(root) {
+  const files = []
+  let bytes = 0
+  async function walk(dir, prefix) {
+    const entries = await readdir(dir, { withFileTypes: true })
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name
+      if (entry.isDirectory()) {
+        await walk(full, rel)
+      } else {
+        const info = await stat(full)
+        bytes += info.size
+        files.push(rel)
+      }
+    }
+  }
+  await walk(root, '')
+  return { files, bytes }
+}
+
+async function tryExtractZip(filePath, uploadDirectory, workspaceRoot, limits, logger) {
+  let isZip = false
+  try {
+    const handle = await open(filePath, 'r')
+    try {
+      const head = Buffer.alloc(4)
+      const { bytesRead } = await handle.read(head, 0, 4, 0)
+      isZip = bytesRead === 4 && isZipBuffer(head)
+    } finally {
+      await handle.close()
+    }
+  } catch {
+    return null
+  }
+  if (!isZip) return null
+
+  let buffer
+  try {
+    buffer = await readFile(filePath)
+  } catch {
+    return null
+  }
+  const stem = basename(filePath, extname(filePath)) || 'archive'
+  const destination = join(uploadDirectory, stem)
+  try {
+    const { files, skipped, bytes } = await extractZip(buffer, destination, {
+      maxBytes: limits.maxExtractMb * 1024 * 1024,
+      maxEntries: limits.maxExtractEntries,
+    })
+    // JS reader extracted nothing but skipped entries (e.g. bzip2/lzma/zstd
+    // compression): hand the archive to a system tool instead of returning
+    // an empty result. If the tool also fails, keep the JS outcome.
+    if (files.length === 0 && skipped.length > 0) {
+      await rm(destination, { recursive: true, force: true }).catch(() => {})
+      const tool = await extractWithSystemTool(filePath, destination, logger)
+      if (tool) {
+        const fallback = await describeExtracted(destination)
+        return {
+          kind: 'zip',
+          extracted: relative(workspaceRoot, destination).split(sep).join('/'),
+          files: fallback.files,
+          skipped: [],
+          extractedBytes: fallback.bytes,
+          extractedVia: tool,
+        }
+      }
+    }
+    return {
+      kind: 'zip',
+      extracted: relative(workspaceRoot, destination).split(sep).join('/'),
+      files,
+      skipped,
+      extractedBytes: bytes,
+    }
+  } catch (error) {
+    // Do not leave a half-extracted directory behind (zip bomb, corrupt
+    // archive, entry cap…). The uploaded .zip itself stays.
+    await rm(destination, { recursive: true, force: true }).catch(() => {})
+    const code = error instanceof ZipExtractError ? error.code : 'CORRUPT'
+    // Structural failure only: try system archive tools before giving up.
+    // Cap violations stay capped — a system tool would hit the same wall.
+    if (code === 'CORRUPT') {
+      const tool = await extractWithSystemTool(filePath, destination, logger)
+      if (tool) {
+        const { files, bytes } = await describeExtracted(destination)
+        return {
+          kind: 'zip',
+          extracted: relative(workspaceRoot, destination).split(sep).join('/'),
+          files,
+          skipped: [],
+          extractedBytes: bytes,
+          extractedVia: tool,
+        }
+      }
+    }
+    if (error instanceof ZipExtractError) {
+      return {
+        kind: 'zip',
+        extractError: error.message,
+        extractErrorCode: error.code,
+        ...(error.code === 'ENTRY_LIMIT' ? { extractLimit: limits.maxExtractEntries } : {}),
+        ...(error.code === 'SIZE_LIMIT' ? { extractLimit: limits.maxExtractMb } : {}),
+      }
+    }
+    return {
+      kind: 'zip',
+      extractError: error instanceof Error ? error.message : String(error),
+      extractErrorCode: 'CORRUPT',
+    }
+  }
+}
+
+export function apply(ctx) {
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: CONFIG_ROUTE,
+    async handler(req, res) {
+      // GET is a read-only public config lookup: browsers send same-origin
+      // GETs WITHOUT an Origin header, so requiring one would 403 the very
+      // request that loads the saved limit after a page refresh. Only the
+      // write path (POST) needs the strict same-origin check.
+      if (req.method === 'GET') {
+        const config = await readConfig()
+        answer(res, 200, {
+          ok: true,
+          ...config,
+          minMb: MIN_MAX_MB,
+          maxMb: MAX_MAX_MB,
+          defaultMb: DEFAULT_MAX_MB,
+          minExtractMb: MIN_EXTRACT_MB,
+          maxExtractMbCap: MAX_EXTRACT_MB,
+          defaultExtractMb: DEFAULT_EXTRACT_MB,
+          minExtractEntries: MIN_EXTRACT_ENTRIES,
+          maxExtractEntriesCap: MAX_EXTRACT_ENTRIES,
+          defaultExtractEntries: DEFAULT_EXTRACT_ENTRIES,
+        })
+        return
+      }
+      if (!sameOrigin(req, ctx)) {
+        answer(res, 403, { ok: false, error: 'Upload origin was rejected.' })
+        return
+      }
+      if (req.method !== 'POST') {
+        answer(res, 405, { ok: false, error: 'Only GET and POST are supported.' })
+        return
+      }
+      let body = ''
+      for await (const chunk of req) body += chunk
+      let parsed
+      try {
+        parsed = JSON.parse(body || '{}')
+      } catch {
+        answer(res, 400, { ok: false, error: 'Invalid JSON body.' })
+        return
+      }
+      const patch = {}
+      if (parsed?.maxUploadMb !== undefined) {
+        const maxUploadMb = normalizeMaxMb(parsed.maxUploadMb)
+        if (maxUploadMb === undefined) {
+          answer(res, 400, {
+            ok: false,
+            error: `maxUploadMb must be an integer between ${MIN_MAX_MB} and ${MAX_MAX_MB}.`,
+          })
+          return
+        }
+        patch.maxUploadMb = maxUploadMb
+      }
+      if (parsed?.maxExtractMb !== undefined) {
+        const maxExtractMb = normalizeExtractMb(parsed.maxExtractMb)
+        if (maxExtractMb === undefined) {
+          answer(res, 400, {
+            ok: false,
+            error: `maxExtractMb must be an integer between ${MIN_EXTRACT_MB} and ${MAX_EXTRACT_MB}.`,
+          })
+          return
+        }
+        patch.maxExtractMb = maxExtractMb
+      }
+      if (parsed?.maxExtractEntries !== undefined) {
+        const maxExtractEntries = normalizeExtractEntries(parsed.maxExtractEntries)
+        if (maxExtractEntries === undefined) {
+          answer(res, 400, {
+            ok: false,
+            error: `maxExtractEntries must be an integer between ${MIN_EXTRACT_ENTRIES} and ${MAX_EXTRACT_ENTRIES}.`,
+          })
+          return
+        }
+        patch.maxExtractEntries = maxExtractEntries
+      }
+      if (Object.keys(patch).length === 0) {
+        answer(res, 400, { ok: false, error: 'No supported setting was provided.' })
+        return
+      }
+      const config = await writeConfig(patch)
+      ctx.logger.info(`workspace-file-upload: config updated: ${JSON.stringify(patch)}`)
+      answer(res, 200, { ok: true, ...config })
+    },
+  }), 'agent-hub: workspace file upload config route')
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: DELETE_ROUTE,
+    async handler(req, res) {
+      if (req.method !== 'POST') {
+        answer(res, 405, { ok: false, error: 'Only POST is supported.' })
+        return
+      }
+      if (!sameOrigin(req, ctx)) {
+        answer(res, 403, { ok: false, error: 'Upload origin was rejected.' })
+        return
+      }
+      let body = ''
+      for await (const chunk of req) body += chunk
+      let parsed
+      try {
+        parsed = JSON.parse(body || '{}')
+      } catch {
+        answer(res, 400, { ok: false, error: 'Invalid JSON body.' })
+        return
+      }
+      const sessionId = String(parsed?.sessionId ?? '')
+      const uploadPath = String(parsed?.path ?? '')
+      if (!uploadPath) {
+        answer(res, 400, { ok: false, error: 'Missing "path".' })
+        return
+      }
+      const session = ctx.sessions.get(sessionId)
+      const workspace = session?.header.cwd
+      if (!workspace) {
+        answer(res, 404, { ok: false, error: 'The active session workspace was not found.' })
+        return
+      }
+      const workspaceRoot = resolve(workspace)
+      const uploadDirectory = resolve(workspaceRoot, '.agent-hub', 'uploads')
+      const boundary = `${uploadDirectory}${sep}`
+      // `path` is workspace-relative (e.g. ".agent-hub/uploads/report.zip"),
+      // matching the value returned by the upload route.
+      const target = resolve(workspaceRoot, uploadPath)
+      if (target !== uploadDirectory && !target.startsWith(boundary)) {
+        answer(res, 400, { ok: false, error: 'The target is outside the uploads directory.' })
+        return
+      }
+      // The uploaded file itself plus its sibling extraction directory
+      // (e.g. report.zip -> report/), which lives next to it.
+      const targets = [target]
+      if (extname(target)) {
+        const sibling = join(dirname(target), basename(target, extname(target)))
+        targets.push(sibling)
+      }
+      let removed = 0
+      for (const t of targets) {
+        try {
+          await stat(t)
+          await rm(t, { recursive: true, force: true })
+          removed += 1
+        } catch (error) {
+          if (error?.code === 'ENOENT') continue
+          ctx.logger.warn(`workspace-file-upload: failed to remove ${t}: ${error?.message ?? error}`)
+        }
+      }
+      ctx.logger.info(`workspace-file-upload: removed ${uploadPath}`)
+      answer(res, 200, { ok: true, removed })
+    },
+  }), 'agent-hub: workspace file upload delete route')
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: ROUTE,
+    async handler(req, res) {
+      if (req.method !== 'POST') {
+        answer(res, 405, { ok: false, error: 'Only POST is supported.' })
+        return
+      }
+      if (!sameOrigin(req, ctx)) {
+        answer(res, 403, { ok: false, error: 'Upload origin was rejected.' })
+        return
+      }
+      const contentType = String(req.headers['content-type'] ?? '')
+        .split(';')[0].trim().toLowerCase()
+      if (contentType && !ACCEPTED_CONTENT_TYPES.has(contentType)) {
+        answer(res, 415, {
+          ok: false,
+          error: `Unsupported upload content type "${contentType}".`,
+        })
+        return
+      }
+      const { maxUploadMb, maxExtractMb, maxExtractEntries } = await readConfig()
+      const maxBytes = maxUploadMb * 1024 * 1024
+      const lengthHeader = req.headers['content-length']
+      const length = lengthHeader === undefined ? undefined : Number(lengthHeader)
+      if (length !== undefined && (!Number.isSafeInteger(length) || length < 0 || length > maxBytes)) {
+        answer(res, 413, { ok: false, error: `File exceeds the ${maxUploadMb} MB limit.` })
+        return
+      }
+
+      const url = new URL(req.url ?? ROUTE, 'http://127.0.0.1')
+      const sessionId = url.searchParams.get('sessionId') ?? ''
+      const requestedName = url.searchParams.get('name') ?? ''
+      const session = ctx.sessions.get(sessionId)
+      const workspace = session?.header.cwd
+      if (!workspace) {
+        answer(res, 404, { ok: false, error: 'The active session workspace was not found.' })
+        return
+      }
+
+      const workspaceRoot = resolve(workspace)
+      const uploadDirectory = resolve(workspaceRoot, '.agent-hub', 'uploads')
+      const boundary = `${workspaceRoot}${sep}`
+      if (uploadDirectory !== workspaceRoot && !uploadDirectory.startsWith(boundary)) {
+        answer(res, 400, { ok: false, error: 'The upload target is outside the workspace.' })
+        return
+      }
+
+      let target
+      try {
+        await mkdir(uploadDirectory, { recursive: true })
+        target = await uniqueTarget(uploadDirectory, safeName(requestedName))
+        const bytes = await receive(req, target, length, maxBytes)
+        const relativePath = relative(workspaceRoot, target).split(sep).join('/')
+        const zipInfo = await tryExtractZip(target, uploadDirectory, workspaceRoot, {
+          maxExtractMb,
+          maxExtractEntries,
+        }, ctx.logger)
+        ctx.logger.info(
+          `workspace-file-upload: saved ${bytes} bytes as ${relativePath}`
+          + (zipInfo?.kind === 'zip' ? `, extracted to ${zipInfo.extracted ?? '(failed)'}` : ''),
+        )
+        answer(res, 201, {
+          ok: true,
+          path: relativePath,
+          bytes,
+          ...(zipInfo ?? { kind: 'file' }),
+        })
+      } catch (error) {
+        if (target) await unlink(target).catch(() => {})
+        const tooLarge = error instanceof Error && error.message === 'FILE_TOO_LARGE'
+        ctx.logger.warn(error instanceof Error ? error : new Error(String(error)))
+        answer(res, tooLarge ? 413 : 400, {
+          ok: false,
+          error: tooLarge ? `File exceeds the ${maxUploadMb} MB limit.` : 'The file could not be saved.',
+        })
+      }
+    },
+  }), 'agent-hub: workspace file upload route')
+}

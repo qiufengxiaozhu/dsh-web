@@ -10,7 +10,8 @@ IMAGE=dsh
 OUT="$DESKTOP/dsh-web.tar.gz"
 
 echo "[build] 构建 $IMAGE（dsh 0.1.0-rc.7 + dsh-web-startup-auth，均来自 npm）"
-docker build -t "$IMAGE" .
+# 构建上下文上移到仓库根目录，以便把 workspace-seed（与 deploy 平级）打进镜像。
+docker build -f Dockerfile -t "$IMAGE" ..
 
 echo "[build] 导出到 $OUT"
 docker save "$IMAGE" | gzip > "$OUT"
