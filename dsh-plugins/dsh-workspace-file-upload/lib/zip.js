@@ -1,21 +1,20 @@
 /**
- * Minimal, dependency-free ZIP reader for the workspace file-upload plugin.
+ * 工作区文件上传插件的极简、零依赖 ZIP 读取器。
  *
- * Supports the two standard compression methods that dominate real archives:
- *  - method 0 (STORE): raw copy
- *  - method 8 (DEFLATE): inflateRawSync from node:zlib
+ * 支持真实压缩包里占绝大多数的两种标准压缩算法：
+ *  - method 0（STORE）：原样拷贝
+ *  - method 8（DEFLATE）：node:zlib 的 inflateRawSync
  *
- * Safety properties (defense against malicious archives):
- *  - every entry name is normalized and must stay inside the extraction root
- *    (zip-slip / absolute-path / drive-letter / `..` traversal rejected)
- *  - total uncompressed bytes and entry count are capped (zip-bomb guard)
- *  - encrypted entries (general-purpose bit 0) and unknown compression
- *    methods are skipped with a reason instead of failing the whole archive
- *  - symlink entries (unix mode S_IFLNK) are skipped, never materialized
+ * 安全特性（防御恶意压缩包）：
+ *  - 每个条目名都会规范化，且必须落在解压根目录之内
+ *    （拒绝 zip-slip / 绝对路径 / 盘符 / `..` 穿越）
+ *  - 解压总字节数与条目数有上限（防 zip 炸弹）
+ *  - 加密条目（通用标志位 0）与未知压缩算法的条目会带原因跳过，
+ *    而不是让整个压缩包失败
+ *  - 符号链接条目（unix mode S_IFLNK）跳过，绝不落地成链接
  *
- * The reader is deliberately simple: it uses the central directory as the
- * source of truth for sizes (handles data-descriptor archives correctly),
- * and computes each entry's data offset from its local header.
+ * 读取器刻意保持简单：以中央目录作为大小信息的唯一可信来源
+ * （能正确处理带数据描述符的压缩包），从各条目的本地头推算数据偏移。
  */
 
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -23,11 +22,11 @@ import { dirname, join, resolve, sep } from 'node:path'
 import { inflateRawSync } from 'node:zlib'
 
 /**
- * Structured extraction error. `code` lets the client surface a friendly,
- * localized message instead of the raw English string.
- *   - 'ENTRY_LIMIT'    - entry count exceeded the configured cap
- *   - 'SIZE_LIMIT'     - total uncompressed size exceeded the configured cap
- *   - 'CORRUPT'        - archive structure is invalid
+ * 结构化解压错误。`code` 让客户端能展示友好、本地化的提示，
+ * 而不是原始的英文串。
+ *   - 'ENTRY_LIMIT'    - 条目数超过配置上限
+ *   - 'SIZE_LIMIT'     - 解压总大小超过配置上限
+ *   - 'CORRUPT'        - 压缩包结构非法
  */
 export class ZipExtractError extends Error {
   constructor(code, message) {
@@ -38,9 +37,8 @@ export class ZipExtractError extends Error {
 }
 
 /**
- * Caps so a hostile or broken archive cannot exhaust disk/memory, while
- * still accepting real-world archives: Windows offline installers routinely
- * pack tens of thousands of entries and extract to hundreds of MB / GB.
+ * 上限值：防止恶意或损坏的压缩包耗尽磁盘/内存，同时仍能接受现实中的
+ * 压缩包——Windows 离线安装包动辄几万个条目、解压后几百 MB 到几 GB。
  */
 export const MAX_EXTRACT_BYTES = 4 * 1024 * 1024 * 1024
 export const MAX_EXTRACT_ENTRIES = 100000
@@ -51,14 +49,14 @@ const SIG_EOCD = 0x06054b50
 const SIG_EOCD64 = 0x06064b50
 const SIG_EOCD64_LOC = 0x07064b50
 
-/** Cheap sniff: PK\x03\x04 (local), PK\x05\x06 (empty), PK\x06\x06 / PK\x06\x07 (zip64). */
+/** 轻量嗅探：PK\x03\x04（本地头）、PK\x05\x06（空包）、PK\x06\x06 / PK\x06\x07（zip64）。 */
 export function isZipBuffer(buffer) {
   if (!Buffer.isBuffer(buffer) || buffer.length < 4) return false
   const magic = buffer.readUInt32LE(0)
   return magic === SIG_LOCAL || magic === SIG_EOCD || magic === SIG_EOCD64 || magic === SIG_EOCD64_LOC
 }
 
-/** Scan backwards for the End-of-Central-Directory record (last 64 KiB + 22 bytes). */
+/** 从尾部向前扫描中央目录结束记录（最后 64 KiB + 22 字节）。 */
 function findEocd(buffer) {
   const start = Math.max(0, buffer.length - 22 - 0xffff)
   for (let i = buffer.length - 22; i >= start; i -= 1) {
@@ -69,25 +67,24 @@ function findEocd(buffer) {
   return -1
 }
 
-/** Normalize one zip entry path to a safe relative path, or null to reject. */
+/** 把单个 zip 条目路径规范化为安全的相对路径，非法则返回 null 拒绝。 */
 function safeEntryName(rawName) {
   if (typeof rawName !== 'string' || rawName.length === 0) return null
   if (rawName.includes('\0')) return null
-  // Treat backslashes as separators too (Windows-made archives).
+  // 反斜杠也按分隔符处理（Windows 打的压缩包）。
   const parts = rawName.split(/[\\/]/).filter((part) => part !== '' && part !== '.')
   if (parts.length === 0) return null
   for (const part of parts) {
     if (part === '..') return null
-    // Drive letters / UNC roots must not leak out of the extraction root.
+    // 盘符 / UNC 根不允许逃出解压根目录。
     if (/^[a-zA-Z]:$/.test(part)) return null
   }
   return parts.join('/')
 }
 
 /**
- * Read ZIP64 extended-info extra fields. Returns a partial record; absent
- * fields stay null. Only the fields the central-directory entry needs are
- * pulled (uncompressed size, compressed size, local offset).
+ * 读取 ZIP64 扩展信息 extra 字段。返回部分记录；缺失的字段保持 null。
+ * 只读取中央目录条目需要的字段（未压缩大小、压缩后大小、本地头偏移）。
  */
 function readZip64Extra(extra, want) {
   let offset = 0
@@ -119,14 +116,14 @@ function readZip64Extra(extra, want) {
 }
 
 /**
- * Extract a zip archive into `destination` (created if missing).
+ * 把 zip 压缩包解压到 `destination`（不存在则创建）。
  *
- * @param {Buffer} buffer   - whole archive bytes.
- * @param {string} destination - absolute extraction root (must already be
- *   verified to live inside the workspace).
- * @param {{ maxBytes?: number, maxEntries?: number }} [limits] - override caps.
+ * @param {Buffer} buffer   - 整个压缩包的字节。
+ * @param {string} destination - 解压根目录的绝对路径（必须已校验位于
+ *   工作区之内）。
+ * @param {{ maxBytes?: number, maxEntries?: number }} [limits] - 覆盖默认上限。
  * @returns {Promise<{ files: string[], skipped: { name: string, reason: string }[], bytes: number }>}
- * @throws on corrupt structure, or when caps are exceeded.
+ * @throws 结构损坏或超过上限时抛出。
  */
 export async function extractZip(buffer, destination, limits = {}) {
   if (!Buffer.isBuffer(buffer) || buffer.length < 4) {
@@ -142,7 +139,7 @@ export async function extractZip(buffer, destination, limits = {}) {
   let cdSize = buffer.readUInt32LE(eocd + 12)
   let cdOffset = buffer.readUInt32LE(eocd + 16)
 
-  // ZIP64 fallback: the 32-bit fields saturate to 0xffffffff.
+  // ZIP64 回退：32 位字段饱和为 0xffffffff 时启用。
   if (entryCount === 0xffff || cdSize === 0xffffffff || cdOffset === 0xffffffff) {
     if (eocd >= 20 && buffer.readUInt32LE(eocd - 20) === SIG_EOCD64_LOC) {
       const eocd64Offset = Number(buffer.readBigUInt64LE(eocd - 12))
@@ -167,9 +164,8 @@ export async function extractZip(buffer, destination, limits = {}) {
   let totalBytes = 0
   let cursor = cdOffset
 
-  // Directory creation is cached: real archives (installers, node_modules)
-  // contain thousands of files but only hundreds of directories, and each
-  // file currently paid for its own recursive mkdir + writeFile serially.
+  // 目录创建做了缓存：真实压缩包（安装器、node_modules）含几千个文件
+  // 却只有几百个目录，而此前每个文件都要串行付一次递归 mkdir + writeFile。
   const createdDirs = new Set()
   async function ensureDir(dirPath) {
     if (dirPath === root || createdDirs.has(dirPath)) return
@@ -177,9 +173,8 @@ export async function extractZip(buffer, destination, limits = {}) {
     await mkdir(dirPath, { recursive: true })
   }
 
-  // Writes are batched and flushed concurrently (bounded memory: the batch
-  // holds at most WRITE_BATCH files or WRITE_BATCH_BYTES of decompressed
-  // data), instead of one await writeFile per entry.
+  // 写入按批聚合、并发落盘（内存有界：批次最多容纳 WRITE_BATCH 个文件
+  // 或 WRITE_BATCH_BYTES 字节的解压数据），取代逐条目一次 await writeFile。
   const WRITE_BATCH = 64
   const WRITE_BATCH_BYTES = 8 * 1024 * 1024
   let writeBatch = []
@@ -224,7 +219,7 @@ export async function extractZip(buffer, destination, limits = {}) {
     if (compressedSize === 0xffffffff && z64.compressed !== undefined) compressedSize = z64.compressed
     if (localOffset === 0xffffffff && z64.offset !== undefined) localOffset = z64.offset
 
-    // General-purpose bit 11 = UTF-8 names; otherwise fall back to latin-1.
+    // 通用标志位 11 = UTF-8 文件名；否则按 latin-1 解码。
     const rawName = (flags & 0x0800) !== 0
       ? nameBytes.toString('utf8')
       : nameBytes.toString('latin1')
@@ -235,18 +230,18 @@ export async function extractZip(buffer, destination, limits = {}) {
       continue
     }
 
-    // Directory entry: name ends with a slash.
+    // 目录条目：名字以斜杠结尾。
     if (rawName.endsWith('/') || rawName.endsWith('\\')) {
       await ensureDir(join(root, ...safeName.split('/')))
       continue
     }
 
-    // Unix symlink (S_IFLNK = 0xA000): never materialize links.
+    // Unix 符号链接（S_IFLNK = 0xA000）：绝不落地成链接。
     if (((externalAttrs >>> 16) & 0xf000) === 0xa000) {
       skipped.push({ name: safeName, reason: 'symlink' })
       continue
     }
-    // Encrypted entry (general-purpose bit 0).
+    // 加密条目（通用标志位 0）。
     if ((flags & 0x0001) !== 0) {
       skipped.push({ name: safeName, reason: 'encrypted' })
       continue

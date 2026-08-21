@@ -10,7 +10,7 @@ window.__ModuleLoader__.load({
     const NS = "agent-hub-file-upload";
     const CONFIG_URL = "/agent-hub/file-upload/config";
 
-    /** zh / en dictionaries for this plugin's namespace (DSH locale ids are "zh" and "en"). */
+    /** 本插件命名空间的中英文词典（DSH 语言 ID 为 "zh" 与 "en"）。 */
     const DICTIONARIES = {
       zh: {
         "button.title": "上传普通文件或 zip 压缩包到当前工作区（zip 会自动解压，最多 {limit} MB/个）；也可直接拖拽文件到页面任意位置",
@@ -94,7 +94,7 @@ window.__ModuleLoader__.load({
       },
     };
 
-    /** Small fetch helper shared by the upload button and the settings rows. */
+    /** 上传按钮与设置行共用的轻量配置请求封装。 */
     async function fetchConfig() {
       const response = await fetch(CONFIG_URL, { cache: "no-store" });
       const result = await response.json().catch(() => ({ ok: false }));
@@ -123,23 +123,22 @@ window.__ModuleLoader__.load({
           };
     }
 
-    /** True when the drag payload contains at least one non-image file. */
+    /** 拖拽负载里是否至少含一个非图片文件。 */
     function hasNonImageFiles(dataTransfer) {
       if (!dataTransfer) return false;
       const types = Array.from(dataTransfer.types || []);
       if (!types.includes("Files")) return false;
       const items = Array.from(dataTransfer.items || []);
-      // Items are unavailable in some browsers during dragover; when in
-      // doubt, treat the drag as ours so non-image files can be received.
+      // 部分浏览器在 dragover 阶段拿不到 items；拿不准时按本插件处理，
+      // 保证非图片文件也能被接收。
       if (!items.length) return true;
       return items.some((item) => item.kind === "file" && !(item.type || "").startsWith("image/"));
     }
 
     /**
-     * Tiny module-level store of successfully uploaded files, shared between
-     * the upload button and the composer-dock list. Uploading never touches
-     * the draft — the user writes their own command — so this store is the
-     * only record of what was uploaded this session.
+     * 模块级的小型上传记录仓库，供上传按钮与输入框 dock 列表共享。
+     * 上传从不写入草稿——指令由用户自己写——因此本仓库是本次会话
+     * 已上传文件的唯一记录。
      */
     const uploadStore = {
       items: [],
@@ -168,7 +167,7 @@ window.__ModuleLoader__.load({
       },
     };
 
-    /** Format a byte count for display. */
+    /** 把字节数格式化为可读文本。 */
     function formatBytes(bytes) {
       if (!Number.isFinite(bytes) || bytes < 0) return "";
       if (bytes < 1024) return `${bytes} B`;
@@ -176,7 +175,7 @@ window.__ModuleLoader__.load({
       return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
     }
 
-    /** Inline paperclip icon (stroke-based, inherits currentColor). */
+    /** 内联回形针图标（描边风格，继承 currentColor）。 */
     function PaperclipIcon({ size }) {
       return React.createElement("svg", {
         width: size, height: size, viewBox: "0 0 24 24",
@@ -184,7 +183,7 @@ window.__ModuleLoader__.load({
         strokeLinecap: "round", strokeLinejoin: "round",
         "aria-hidden": "true", style: { display: "block" },
       },
-        // Standard paperclip path (feather/lucide style).
+        // 标准回形针路径（feather/lucide 风格）。
         React.createElement("path", { d: "M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" })
       );
     }
@@ -204,7 +203,7 @@ window.__ModuleLoader__.load({
         fetchConfig().then((config) => setLimit(config.maxUploadMb)).catch(() => {});
       }, []);
 
-      // Re-render when the active locale changes so translated strings refresh.
+      // 语言切换时重新渲染，让翻译文案刷新。
       const [localeRev, setLocaleRev] = React.useState(0);
       React.useEffect(() => {
         if (!props.localeSubscribe) return undefined;
@@ -212,8 +211,8 @@ window.__ModuleLoader__.load({
       }, []);
       void localeRev;
 
-      // Page-level drag & drop: anywhere in the window, non-image files are
-      // received and uploaded; pure image drags keep the native attach flow.
+      // 页面级拖拽：窗口任意位置都可接收非图片文件并上传；
+      // 纯图片拖拽仍走原生附件流程。
       React.useEffect(() => {
         function onDragEnter(event) {
           if (!hasNonImageFiles(event.dataTransfer)) return;
@@ -223,7 +222,7 @@ window.__ModuleLoader__.load({
         }
         function onDragOver(event) {
           if (!hasNonImageFiles(event.dataTransfer)) return;
-          // Required to allow drop; also stops the browser from opening files.
+          // 必须 preventDefault 才允许 drop，同时阻止浏览器直接打开文件。
           event.preventDefault();
         }
         function onDragLeave(event) {
@@ -252,7 +251,7 @@ window.__ModuleLoader__.load({
         };
       }, []);
 
-      // Kept in a ref so the effect above never needs re-binding.
+      // 放进 ref，让上面的 effect 无需因函数变化而重新绑定。
       const uploadFilesRef = React.useRef(null);
 
       async function uploadOne(file, maxBytes) {
@@ -282,9 +281,8 @@ window.__ModuleLoader__.load({
             setStatus({ tone: "info", text: t("upload.progress", { name: file.name, current: i + 1, total: files.length }) });
             results.push(await uploadOne(file, maxBytes));
           }
-          // Record every upload in the store for the composer-dock list. We
-          // deliberately do NOT write to the draft: the user writes their own
-          // command (edit vs read vs anything else).
+          // 把每次上传记入仓库，供输入框 dock 列表展示。
+          // 刻意不写入草稿：指令（编辑/读取/其他）由用户自己写。
           for (const result of results) {
             uploadStore.add({
               sessionId: String(props.sessionId ?? ""),
@@ -299,7 +297,9 @@ window.__ModuleLoader__.load({
               extractLimit: result.extractLimit,
             });
           }
-          setStatus({ tone: "ok", text: t("upload.done", { count: results.length }) });
+          // 累计提示数：算上本次会话此前已上传的文件，而不是只报本次批量。
+          const mine = uploadStore.getSnapshot().filter((item) => String(item.sessionId ?? "") === String(props.sessionId ?? ""));
+          setStatus({ tone: "ok"/*, text: t("upload.done", { count: mine.length })*/ });
         } catch (error) {
           setStatus({ tone: "error", text: error instanceof Error ? error.message : String(error) });
         } finally {
@@ -397,7 +397,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** Compact settings rows in Settings → General: upload limit + zip extract limit. */
+    /** 设置 → General 里的紧凑设置行：上传大小上限 + zip 解压上限。 */
     function UploadLimitRow(props) {
       const t = props.t;
       const [draft, setDraft] = React.useState("25");
@@ -407,7 +407,7 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState(false);
       const [message, setMessage] = React.useState(null);
 
-      // Re-render when the active locale changes so translated strings refresh.
+      // 语言切换时重新渲染，让翻译文案刷新。
       const [localeRev, setLocaleRev] = React.useState(0);
       React.useEffect(() => {
         if (!props.localeSubscribe) return undefined;
@@ -566,7 +566,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** Composer-dock list of files uploaded in THIS session (no draft text). */
+    /** 输入框 dock 列表：展示本会话已上传的文件（不写入草稿文本）。 */
     function UploadedFilesRow(props) {
       const t = props.t;
       const sessionId = String(props.sessionId ?? "");
@@ -574,7 +574,7 @@ window.__ModuleLoader__.load({
       const [items, setItems] = React.useState(ownItems);
       const [error, setError] = React.useState(null);
       React.useEffect(() => uploadStore.subscribe(() => setItems(ownItems())), [sessionId]);
-      // Re-render on locale switch.
+      // 语言切换时重新渲染。
       const [localeRev, setLocaleRev] = React.useState(0);
       React.useEffect(() => {
         if (!props.localeSubscribe) return undefined;
@@ -584,7 +584,7 @@ window.__ModuleLoader__.load({
 
       if (!items.length) return null;
 
-      /** Delete one uploaded file (and its extracted dir) on the host. */
+      /** 在宿主机上删除单个已上传文件（连同解压出的目录）。 */
       async function removeOne(item) {
         setError(null);
         try {
@@ -602,7 +602,7 @@ window.__ModuleLoader__.load({
         }
       }
 
-      /** Delete every uploaded file of THIS session on the host, then clear. */
+      /** 在宿主机上删除本会话全部已上传文件，然后清空列表。 */
       async function removeAll() {
         setError(null);
         const snapshot = uploadStore.getSnapshot();
@@ -622,8 +622,7 @@ window.__ModuleLoader__.load({
             failed += 1;
           }
         }
-        // Remove only THIS session's entries from the store; other sessions'
-        // uploads must stay untouched.
+        // 只移除本会话的记录；其他会话的上传保持不动。
         for (const item of mine) uploadStore.remove(item.path, item.sessionId);
         if (failed > 0) setError(t("dock.deleteSomeFailed", { count: failed }));
       }
@@ -641,8 +640,8 @@ window.__ModuleLoader__.load({
         lineHeight: "18px",
         color: "inherit",
       };
-      // The file name ellipsizes inside the chip; the remove button stays
-      // visible and clickable (no overflow clipping on the chip itself).
+      // 文件名在 chip 内部省略号截断；删除按钮始终可见可点
+      // （chip 本身不做溢出裁剪）。
       const nameStyle = {
         overflow: "hidden",
         textOverflow: "ellipsis",
@@ -741,13 +740,12 @@ window.__ModuleLoader__.load({
 
     function apply(ctx) {
       const t = ctx.locale.bind(NS);
-      // ctx.effect(cb) runs cb immediately and keeps ITS RETURN VALUE as the
-      // cleanup disposer. So we must pass () => register(...) — passing the
-      // disposer itself would call it right away and unregister the dicts.
+      // ctx.effect(cb) 立即执行 cb，并把 cb 的返回值作为清理函数保留。
+      // 所以必须传 () => register(...)——直接传清理函数本身会立刻执行、
+      // 当场注销词典。
       ctx.effect(() => ctx.locale.register(NS, DICTIONARIES));
-      // Pass the locale subscription through so components re-render on
-      // language switch (t() reads the active locale at call time, but the
-      // component must re-render for new strings to show).
+      // 把语言订阅透传下去，切换语言时组件重新渲染
+      // （t() 虽在调用时读取当前语言，但组件必须重渲染才能显示新文案）。
       const localeSubscribe = ctx.locale.subscribe.bind(ctx.locale);
 
       ctx.slots.inject("conversation.input.left", () => ctx.slots.register({
@@ -756,9 +754,8 @@ window.__ModuleLoader__.load({
         order: 35,
         label: t("slot.uploadLabel"),
       }, (props) => React.createElement(UploadButton, Object.assign({}, props, { t, localeSubscribe }))));
-      // Uploaded-file chips live in the input dock strip (above the input bar,
-      // where the todo plan and queue strips render) instead of inside the
-      // button row, keeping the composer row clean.
+      // 已上传文件的 chip 挂在输入框 dock 条带（输入框上方，todo 计划条
+      // 与队列条所在的位置），不再挤在按钮行里，保持输入行整洁。
       ctx.slots.inject("conversation.input.dock", () => ctx.slots.register({
         name: "conversation.input.dock",
         id: "agent-hub-workspace-file-uploads",

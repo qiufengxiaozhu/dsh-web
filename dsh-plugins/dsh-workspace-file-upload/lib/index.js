@@ -24,7 +24,7 @@ const MIN_EXTRACT_ENTRIES = 1
 const MAX_EXTRACT_ENTRIES = 10000000
 const CONFIG_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'config.json')
 
-/** Content types we accept as raw binary uploads (parameters are ignored). */
+/** 允许作为原始二进制上传的内容类型（参数部分被忽略）。 */
 const ACCEPTED_CONTENT_TYPES = new Set([
   'application/octet-stream',
   'application/zip',
@@ -35,7 +35,7 @@ const ACCEPTED_CONTENT_TYPES = new Set([
   'application/x-rar-compressed',
 ])
 
-/** Clamp an arbitrary value into the valid max-MB range, or undefined. */
+/** 把任意值收敛到合法的上限 MB 区间，非法返回 undefined。 */
 function normalizeMaxMb(value) {
   const number = Number(value)
   if (!Number.isFinite(number)) return undefined
@@ -44,7 +44,7 @@ function normalizeMaxMb(value) {
   return clamped
 }
 
-/** Clamp an arbitrary value into the valid extract-MB range, or undefined. */
+/** 把任意值收敛到合法的解压 MB 区间，非法返回 undefined。 */
 function normalizeExtractMb(value) {
   const number = Number(value)
   if (!Number.isFinite(number)) return undefined
@@ -53,7 +53,7 @@ function normalizeExtractMb(value) {
   return clamped
 }
 
-/** Clamp an arbitrary value into the valid extract-entries range, or undefined. */
+/** 把任意值收敛到合法的解压条目数区间，非法返回 undefined。 */
 function normalizeExtractEntries(value) {
   const number = Number(value)
   if (!Number.isFinite(number)) return undefined
@@ -75,7 +75,7 @@ async function readConfig() {
       maxExtractEntries: extractEntries !== undefined ? extractEntries : DEFAULT_EXTRACT_ENTRIES,
     }
   } catch {
-    // missing or unreadable config falls back to defaults
+    // 配置缺失或不可读时回退到默认值
   }
   return {
     maxUploadMb: DEFAULT_MAX_MB,
@@ -114,13 +114,10 @@ function safeName(raw) {
 }
 
 /**
- * Same-origin guard for the upload endpoint. Beyond the loopback host, an
- * Origin from any host is accepted as long as it is an http(s) URL on the
- * exact port the web server listens on AND its hostname matches the Host
- * header of the request itself — a genuinely same-origin page. Cross-site
- * pages cannot forge that Origin/Host pairing. Remote deployments are
- * expected to sit behind dsh-web-startup-auth, so requests arriving here
- * have already been authenticated.
+ * 上传接口的同源校验。除环回地址外，只要 Origin 是与 Web 服务器监听端口
+ * 完全一致的 http(s) URL，且其主机名与请求自身的 Host 头一致——即真正的
+ * 同源页面——就放行。跨站页面无法伪造这种 Origin/Host 配对。远程部署
+ * 场景下应由 dsh-web-startup-auth 前置把守，到达这里的请求都已通过认证。
  */
 function sameOrigin(req, ctx) {
   const origin = req.headers.origin
@@ -142,8 +139,8 @@ function sameOrigin(req, ctx) {
 async function uniqueTarget(directory, requestedName) {
   const extension = extname(requestedName)
   const stem = requestedName.slice(0, requestedName.length - extension.length) || 'uploaded-file'
-  // Prefer the original name; on collision grow a predictable sequence
-  // (report.zip, report-1.zip, report-2.zip) instead of random suffixes.
+  // 优先用原始文件名；冲突时按可预期的序号递增
+  // （report.zip、report-1.zip、report-2.zip），而不是随机后缀。
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const candidateName = attempt === 0 ? `${stem}${extension}` : `${stem}-${attempt}${extension}`
     const candidate = join(directory, candidateName)
@@ -181,18 +178,17 @@ async function receive(req, target, expectedLength, maxBytes) {
 }
 
 /**
- * Inspect a saved upload; if it is a ZIP archive (by magic bytes), extract it
- * next to itself and describe the result. Returns null for non-ZIP uploads.
+ * 检查已保存的上传；若是 ZIP 压缩包（按魔数判断），在其旁边解压并描述
+ * 结果。非 ZIP 上传返回 null。
  * @param {{ maxExtractMb: number, maxExtractEntries: number }} limits
  */
 /**
- * Fallback extraction using system archive tools, tried only when the
- * built-in JS reader fails with a structural error (CORRUPT). Real Windows
- * installers sometimes use methods our minimal reader skips (bzip2, lzma,
- * zstd…); tar.exe / Expand-Archive handle those natively.
+ * 使用系统压缩工具的兜底解压，仅在内置 JS 读取器因结构性错误（CORRUPT）
+ * 失败时尝试。真实的 Windows 安装包有时会用到我们极简读取器跳过的压缩
+ * 算法（bzip2、lzma、zstd…）；tar.exe / Expand-Archive 原生就能处理。
  *
- * Candidates, in order: 7z (7-Zip), tar (Windows 10+ ships bsdtar which
- * reads zip), then PowerShell Expand-Archive.
+ * 候选顺序：7z（7-Zip）、tar（Windows 10+ 自带能读 zip 的 bsdtar），
+ * 最后是 PowerShell Expand-Archive。
  */
 async function extractWithSystemTool(filePath, destination, logger) {
   const candidates = [
@@ -214,7 +210,7 @@ async function extractWithSystemTool(filePath, destination, logger) {
       await rm(destination, { recursive: true, force: true }).catch(() => {})
     }
   }
-  // Last resort: PowerShell Expand-Archive (always present on Windows).
+  // 最后兜底：PowerShell Expand-Archive（Windows 上总是可用）。
   try {
     await mkdir(destination, { recursive: true })
     const script = `Expand-Archive -LiteralPath '${filePath.replace(/'/g, "''")}' -DestinationPath '${destination.replace(/'/g, "''")}' -Force`
@@ -232,7 +228,7 @@ async function extractWithSystemTool(filePath, destination, logger) {
   }
 }
 
-/** Recursively list relative paths + total bytes under a directory. */
+/** 递归列出目录下的相对路径与总字节数。 */
 async function describeExtracted(root) {
   const files = []
   let bytes = 0
@@ -283,9 +279,9 @@ async function tryExtractZip(filePath, uploadDirectory, workspaceRoot, limits, l
       maxBytes: limits.maxExtractMb * 1024 * 1024,
       maxEntries: limits.maxExtractEntries,
     })
-    // JS reader extracted nothing but skipped entries (e.g. bzip2/lzma/zstd
-    // compression): hand the archive to a system tool instead of returning
-    // an empty result. If the tool also fails, keep the JS outcome.
+    // JS 读取器什么都没解出来但有跳过条目（如 bzip2/lzma/zstd 压缩）：
+    // 改用系统工具处理，而不是返回空结果。若系统工具也失败，
+    // 保留 JS 的结果。
     if (files.length === 0 && skipped.length > 0) {
       await rm(destination, { recursive: true, force: true }).catch(() => {})
       const tool = await extractWithSystemTool(filePath, destination, logger)
@@ -309,12 +305,12 @@ async function tryExtractZip(filePath, uploadDirectory, workspaceRoot, limits, l
       extractedBytes: bytes,
     }
   } catch (error) {
-    // Do not leave a half-extracted directory behind (zip bomb, corrupt
-    // archive, entry cap…). The uploaded .zip itself stays.
+    // 不留半解压的目录（zip 炸弹、损坏的压缩包、条目数超限…）。
+    // 上传的 .zip 文件本身保留。
     await rm(destination, { recursive: true, force: true }).catch(() => {})
     const code = error instanceof ZipExtractError ? error.code : 'CORRUPT'
-    // Structural failure only: try system archive tools before giving up.
-    // Cap violations stay capped — a system tool would hit the same wall.
+    // 仅结构性失败：放弃前先试系统压缩工具。
+    // 超限的依旧超限——系统工具也会撞同一堵墙。
     if (code === 'CORRUPT') {
       const tool = await extractWithSystemTool(filePath, destination, logger)
       if (tool) {
@@ -351,10 +347,9 @@ export function apply(ctx) {
     kind: 'exact',
     path: CONFIG_ROUTE,
     async handler(req, res) {
-      // GET is a read-only public config lookup: browsers send same-origin
-      // GETs WITHOUT an Origin header, so requiring one would 403 the very
-      // request that loads the saved limit after a page refresh. Only the
-      // write path (POST) needs the strict same-origin check.
+      // GET 是只读的公开配置查询：浏览器的同源 GET 不带 Origin 头，
+      // 强制要求 Origin 会让页面刷新后加载已保存上限的那次请求直接 403。
+      // 只有写路径（POST）需要严格的同源校验。
       if (req.method === 'GET') {
         const config = await readConfig()
         answer(res, 200, {
@@ -469,15 +464,15 @@ export function apply(ctx) {
       const workspaceRoot = resolve(workspace)
       const uploadDirectory = resolve(workspaceRoot, '.agent-hub', 'uploads')
       const boundary = `${uploadDirectory}${sep}`
-      // `path` is workspace-relative (e.g. ".agent-hub/uploads/report.zip"),
-      // matching the value returned by the upload route.
+      // `path` 是相对工作区的路径（如 ".agent-hub/uploads/report.zip"），
+      // 与上传接口返回的值保持一致。
       const target = resolve(workspaceRoot, uploadPath)
       if (target !== uploadDirectory && !target.startsWith(boundary)) {
         answer(res, 400, { ok: false, error: 'The target is outside the uploads directory.' })
         return
       }
-      // The uploaded file itself plus its sibling extraction directory
-      // (e.g. report.zip -> report/), which lives next to it.
+      // 删除上传文件本身，加上旁边的解压目录
+      // （如 report.zip → report/），解压目录就落在同级。
       const targets = [target]
       if (extname(target)) {
         const sibling = join(dirname(target), basename(target, extname(target)))
