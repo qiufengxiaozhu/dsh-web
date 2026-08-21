@@ -682,8 +682,16 @@ window.__ModuleLoader__.load({
           : t("dock.fileTooltip", { path: item.path });
       };
 
+      // 对齐宿主的对话内容列：dock 插槽与输入框卡片同宽（约 780px），
+      // 比消息列（--dsh-chat-content-width，748px）宽；todo/queue dock 都是
+      // 自己再减去左右 clearance + inset 来对齐内容列的，这里照做，
+      // 否则上传条会视觉上超出对话边界。
       return React.createElement("div", {
         style: {
+          boxSizing: "border-box",
+          width: "calc(100% - 2 * (var(--dsh-composer-side-clearance, 16px) + 16px))",
+          maxWidth: "var(--dsh-chat-content-width, 748px)",
+          margin: "0 auto",
           display: "flex",
           alignItems: "center",
           flexWrap: "wrap",
