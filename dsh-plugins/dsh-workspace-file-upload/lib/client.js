@@ -278,11 +278,10 @@ window.__ModuleLoader__.load({
           const results = [];
           for (let i = 0; i < files.length; i += 1) {
             const file = files[i];
-            setStatus({ tone: "info", text: t("upload.progress", { name: file.name, current: i + 1, total: files.length }) });
+            // setStatus({ tone: "info", text: t("upload.progress", { name: file.name, current: i + 1, total: files.length }) });
             results.push(await uploadOne(file, maxBytes));
           }
           // 把每次上传记入仓库，供输入框 dock 列表展示。
-          // 刻意不写入草稿：指令（编辑/读取/其他）由用户自己写。
           for (const result of results) {
             uploadStore.add({
               sessionId: String(props.sessionId ?? ""),
@@ -297,14 +296,31 @@ window.__ModuleLoader__.load({
               extractLimit: result.extractLimit,
             });
           }
-          // 累计提示数：算上本次会话此前已上传的文件，而不是只报本次批量。
-          const mine = uploadStore.getSnapshot().filter((item) => String(item.sessionId ?? "") === String(props.sessionId ?? ""));
-          setStatus({ tone: "ok"/*, text: t("upload.done", { count: mine.length })*/ });
+          appendPathsToDraft(results);
         } catch (error) {
           setStatus({ tone: "error", text: error instanceof Error ? error.message : String(error) });
         } finally {
           setBusy(false);
         }
+      }
+
+      /**
+       * 上传成功后把附件路径追加进输入框草稿。附件存在工作区之外的
+       * 会话私有目录里，模型无法从工作区发现它们——必须把绝对路径
+       * 随用户消息带出去，模型才能读到。幂等：同一路径不重复追加。
+       */
+      function appendPathsToDraft(results) {
+        const actions = props.inputActions;
+        if (!actions?.setDraft) return;
+        const current = inputState.draft ?? "";
+        const additions = [];
+        for (const result of results) {
+          if (!result?.path || current.includes(result.path)) continue;
+          additions.push(result.path);
+        }
+        if (!additions.length) return;
+        const separator = current && !current.endsWith("\n") ? "\n" : "";
+        actions.setDraft(`${current}${separator}${additions.join("\n")}\n`);
       }
       uploadFilesRef.current = uploadFiles;
 

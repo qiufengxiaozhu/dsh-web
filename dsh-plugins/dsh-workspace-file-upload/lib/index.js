@@ -1,6 +1,7 @@
-import { createHash } from 'node:crypto'
+import { createHmac, randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { createWriteStream } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { mkdir, open, unlink, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -152,24 +153,35 @@ function sameOrigin(req, ctx) {
 const UPLOAD_ROOT = process.env.DSH_UPLOAD_ROOT
   ?? join(process.env.DSH_HOME ?? homedir(), 'workspace-file-upload')
 
-/** 把任意 ID/路径收敛为安全目录段：只留字母数字与 . _ -，截断到 64。 */
-function safeSegment(raw) {
-  const cleaned = String(raw).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 64)
-  return cleaned || 'default'
-}
-
 /**
- * 工作区 → 稳定目录名。用 sha256 前 16 位避免路径超长/非法字符，
- * 同时保留 basename 前缀方便人工排查目录归属。
+ * 附件目录名改用 HMAC 派生的不透明标识：路径里不再出现工作区名和
+ * 原始 sessionId——它们会随用户消息暴露给模型/看到对话的人，等于泄露
+ * 内部结构。密钥持久化在上传根目录下，保证容器重启后目录名稳定
+ * （历史消息里的路径在重启后仍要能读）。
  */
-function workspaceSegment(workspaceRoot) {
-  const hash = createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 16)
-  return `${safeSegment(basename(workspaceRoot)).slice(0, 32) || 'ws'}-${hash}`
+function uploadSecret() {
+  const keyPath = join(UPLOAD_ROOT, '.secret')
+  try {
+    const key = readFileSync(keyPath)
+    if (key.length >= 32) return key
+  } catch {
+    // 首次运行：生成并持久化
+  }
+  const key = randomBytes(32)
+  mkdirSync(UPLOAD_ROOT, { recursive: true })
+  writeFileSync(keyPath, key, { mode: 0o600 })
+  return key
 }
 
-/** 本会话的附件目录：<root>/<workspace-hash>/<sessionId>/。 */
+const UPLOAD_SECRET = uploadSecret()
+
+function opaqueToken(value) {
+  return createHmac('sha256', UPLOAD_SECRET).update(String(value)).digest('hex').slice(0, 24)
+}
+
+/** 本会话的附件目录：<root>/<workspace-hmac>/<session-hmac>/，名称不可反推。 */
 function sessionUploadDir(workspaceRoot, sessionId) {
-  return resolve(UPLOAD_ROOT, workspaceSegment(workspaceRoot), safeSegment(sessionId))
+  return resolve(UPLOAD_ROOT, opaqueToken(workspaceRoot), opaqueToken(`session:${sessionId}`))
 }
 
 async function uniqueTarget(directory, requestedName) {

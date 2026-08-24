@@ -20,15 +20,28 @@ mkdir -p "$PROFILE_DIR"
 
 # 增量同步种子插件：逐个检查能否从数据卷 profile 解析，缺哪个补哪个。
 # 同时把缺的包名合并进 package.json 的 dependencies 与 dsh.profile.bundles，
-# 保证 dsh 启动时能作为 bundle 层加载。已装的不动（保留用户改动与版本）。
+# 保证 dsh 启动时能作为 bundle 层加载。
+# 覆盖策略分两类：本地自定义插件（种子里有源码实体）每次启动强制覆盖，
+# 始终以镜像为最新；线上 npm 插件已装的不动（保留用户改动与版本）。
 sync_plugins() {
-  local pkg dir scope name
+  local pkg dir scope name seed_dir force
   while IFS= read -r pkg; do
     [ -n "$pkg" ] || continue
-    if node -e "require.resolve('$pkg/package.json', { paths: ['$PROFILE_DIR'] })" >/dev/null 2>&1; then
+    seed_dir="/opt/seed/.dsh/profiles/web/node_modules/$pkg"
+    # 本地插件判据：种子 package.json 里该依赖是 link:/file: 形式
+    #（构建时已解引用成实体目录）。本地插件强制覆盖，npm 插件已装不动。
+    force=false
+    node -e "
+      const deps = require('/opt/seed/.dsh/profiles/web/package.json').dependencies || {};
+      const spec = deps['$pkg'] || '';
+      process.exit(/^(link|file):/.test(spec) ? 0 : 1);
+    " && force=true
+    if [ "$force" = false ] \
+      && node -e "require.resolve('$pkg/package.json', { paths: ['$PROFILE_DIR'] })" >/dev/null 2>&1; then
       continue
     fi
-    echo "[entrypoint] 数据卷缺插件 $pkg，从镜像种子拷入"
+    [ "$force" = true ] && echo "[entrypoint] 本地插件 $pkg 强制覆盖同步"
+    [ "$force" = false ] && echo "[entrypoint] 数据卷缺插件 $pkg，从镜像种子拷入"
     # node_modules 里按 scope/name 落盘（@scope/name 或 name）。
     case "$pkg" in
       @*/*) scope="${pkg%%/*}"; name="${pkg#*/}"; dir="$PROFILE_DIR/node_modules/$scope/$name" ;;
@@ -36,10 +49,11 @@ sync_plugins() {
     esac
     mkdir -p "$(dirname "$dir")"
     # 种子以解引用的真实目录分发（link: 依赖已在构建期 cp 成实体）。
-    local seed_dir="/opt/seed/.dsh/profiles/web/node_modules/$pkg"
     if [ ! -d "$seed_dir" ]; then
       echo "[entrypoint] 种子中无 $pkg，跳过" >&2; continue
     fi
+    # 强制覆盖：先删旧目录再拷，保证与镜像种子完全一致。
+    [ "$force" = true ] && rm -rf "$dir"
     cp -a "$seed_dir" "$dir"
     # pnpm hoisted 布局：插件的 peer/host 依赖提升在 node_modules 顶层与 .pnpm。
     # 全新数据卷缺这些骨架，逐项补齐（已存在的项不动，保留数据卷现状）。
@@ -75,21 +89,32 @@ sync_plugins() {
 }
 [ -f /opt/seed/plugins.txt ] && sync_plugins
 
-# 预置默认工作区：镜像构建时装好的 openApi/openDoc（含 skills），首次启动拷进数据卷。
+# 预置默认工作区：镜像构建时装好的 openApi/openDoc（含 skills），首次启动
+# 拷进数据卷；工作区其余内容不覆盖。
 for ws in /opt/seed/workspace-seed/*; do
   name="$(basename "$ws")"
   if [ ! -d "/workspace/$name" ]; then
     echo "[entrypoint] 初始化默认工作区 /workspace/$name"
     cp -a "$ws" "/workspace/$name"
   else
-    # 已存在的工作区只补充 skills 与 CLAUDE.md，不覆盖用户内容。
-    for item in .claude CLAUDE.md; do
-      if [ -e "$ws/$item" ] && [ ! -e "/workspace/$name/$item" ]; then
+    # 已存在的工作区：skills 与 CLAUDE.md 每次启动强制以镜像为最新覆盖，
+    # 防止对话过程中大模型按用户要求改动这些内容后偏离源代码。
+    for item in .claude/skills CLAUDE.md; do
+      if [ -e "$ws/$item" ]; then
+        rm -rf "/workspace/$name/$item"
         cp -a "$ws/$item" "/workspace/$name/$item"
       fi
     done
   fi
 done
+
+# 运行时把 skills 目录与 CLAUDE.md 设为只读（chmod 444/555），给大模型的
+# 覆盖写制造阻力：普通 write/edit 会因权限被拒。dsh 的 workspace-write
+# 沙箱下 rm+重写也能绕过 chmod（目录本身可写），所以这层是"防误改"而
+# 非安全边界；真正的保障仍靠每次启动的强制覆盖（上一段）。
+find /workspace -path '*/.claude/skills*' -type d -exec chmod 555 {} + 2>/dev/null || true
+find /workspace -path '*/.claude/skills*' -type f -exec chmod 444 {} + 2>/dev/null || true
+find /workspace -maxdepth 2 -name CLAUDE.md -exec chmod 444 {} + 2>/dev/null || true
 
 TRUST_ARGS=()
 for authority in ${DSH_TRUSTED_HOSTS:-}; do
