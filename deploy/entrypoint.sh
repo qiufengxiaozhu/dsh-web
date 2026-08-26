@@ -116,6 +116,54 @@ find /workspace -path '*/.claude/skills*' -type d -exec chmod 555 {} + 2>/dev/nu
 find /workspace -path '*/.claude/skills*' -type f -exec chmod 444 {} + 2>/dev/null || true
 find /workspace -maxdepth 2 -name CLAUDE.md -exec chmod 444 {} + 2>/dev/null || true
 
+# settings.yaml 后处理：dsh 对不在内置模型目录里的模型一律视为仅文本，
+# 界面配置的自定义 provider 模型（glm 等）会被 MODEL_DOES_NOT_SUPPORT_IMAGES
+# 拒绝图片上传。这里默认给 settings.yaml 里所有 provider 的未声明 input 的
+# 模型补 [text, image]（走自建网关时模型基本都支持识图）；设
+# DSH_PROVIDERS_DEFAULT_VISION=0 恢复 dsh 原生保守默认。显式写了 input 的
+# 条目（含 ["text"]）不动。随后再合并 DSH_LLM_PROVIDERS（可选，env 方式
+# 配置 provider 时用；同名 provider 整体覆盖，界面配置为主则无需设置）。
+DSH_SETTINGS="$DSH_HOME/settings.yaml"
+if [ -f "$DSH_SETTINGS" ] && [ "${DSH_PROVIDERS_DEFAULT_VISION:-1}" != "0" ]; then
+  DSH_SETTINGS="$DSH_SETTINGS" node -e '
+    const fs = require("fs");
+    const { parse, stringify } = require(require("path").join(
+      require("child_process").execSync("npm root -g").toString().trim(),
+      "@deepseek-ai/dsh/node_modules/yaml"));
+    const path = process.env.DSH_SETTINGS;
+    const settings = parse(fs.readFileSync(path, "utf8")) || {};
+    const providers = settings["llm-pi-ai"]?.providers || {};
+    let touched = 0;
+    for (const route of Object.values(providers)) {
+      if (!route || typeof route !== "object" || !Array.isArray(route.models)) continue;
+      if (route.defaultInput === undefined) route.defaultInput = ["text", "image"];
+      for (const model of route.models)
+        if (model && typeof model === "object" && model.input === undefined) { model.input = ["text", "image"]; touched++; }
+    }
+    if (touched > 0) {
+      fs.writeFileSync(path, stringify(settings));
+      console.log("[entrypoint] 已为 " + touched + " 个模型默认启用图片输入（DSH_PROVIDERS_DEFAULT_VISION=0 可关闭）");
+    }
+  ' || echo "[entrypoint] settings.yaml 图片模态补默认失败，跳过" >&2
+fi
+if [ -n "${DSH_LLM_PROVIDERS:-}" ]; then
+  mkdir -p "$DSH_HOME"
+  DSH_LLM_PROVIDERS="$DSH_LLM_PROVIDERS" DSH_SETTINGS="$DSH_SETTINGS" node -e '
+    const fs = require("fs");
+    const { parse, stringify } = require(require("path").join(
+      require("child_process").execSync("npm root -g").toString().trim(),
+      "@deepseek-ai/dsh/node_modules/yaml"));
+    const path = process.env.DSH_SETTINGS;
+    const providers = JSON.parse(process.env.DSH_LLM_PROVIDERS);
+    let settings = {};
+    try { settings = parse(fs.readFileSync(path, "utf8")) || {}; } catch {}
+    settings["llm-pi-ai"] = settings["llm-pi-ai"] || {};
+    settings["llm-pi-ai"].providers = { ...(settings["llm-pi-ai"].providers || {}), ...providers };
+    fs.writeFileSync(path, stringify(settings));
+    console.log("[entrypoint] 已合并 DSH_LLM_PROVIDERS -> settings.yaml providers: " + Object.keys(providers).join(", "));
+  ' || { echo "[entrypoint] DSH_LLM_PROVIDERS 合并失败，继续用现有 settings.yaml" >&2; }
+fi
+
 TRUST_ARGS=()
 for authority in ${DSH_TRUSTED_HOSTS:-}; do
   TRUST_ARGS+=(--trusted-host "$authority")

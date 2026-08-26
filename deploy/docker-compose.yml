@@ -20,6 +20,8 @@ services:
       # 原版 CLI 的 --trusted-host 透传；dsh-web-startup-auth 自身的认证
       # 不依赖它（远程一律要求登录），但留空可能导致部分检查 403，建议配好。
       DSH_TRUSTED_HOSTS: ${DSH_TRUSTED_HOSTS:-}
-      # 自定义大模型提供方（JSON 字典，启动时合并进数据卷 settings.yaml）。
+      # 自定义大模型提供方（JSON 字典，启动时合并进数据卷 settings.yaml；
+      # 未声明 input 的模型默认支持识图，DSH_PROVIDERS_DEFAULT_VISION=0 关闭）。
       DSH_LLM_PROVIDERS: ${DSH_LLM_PROVIDERS:-}
+      DSH_PROVIDERS_DEFAULT_VISION: ${DSH_PROVIDERS_DEFAULT_VISION:-}
     restart: unless-stopped
