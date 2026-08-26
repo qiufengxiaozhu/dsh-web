@@ -1,7 +1,6 @@
 ---
 name: openapi-error-log
 description: 分析 luoshu-server OpenAPI 错误日志，覆盖鉴权→参数校验→任务入队→下载→校验→转换→回调→下载全链路。当用户提到 OpenAPI 报错、转换失败、回调失败、任务超时时触发。场景详见 references/openapi-error-scenarios.md。
-disable-model-invocation: true
 ---
 
 # OpenAPI 错误日志分析

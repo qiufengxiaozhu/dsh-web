@@ -1,7 +1,6 @@
 ---
 name: opendoc-error-log
 description: 分析洛书服务文档打开（预览+编辑）错误日志。覆盖 HTTP入口→WebSocket→文档转换→Draft加载→保存发布→资源加载全阶段。当用户提到文档打不开、预览白屏、编辑报错、转换失败、保存失败时触发。场景详见 references/opendoc-error-scenarios.md。
-disable-model-invocation: true
 ---
 
 # 文档打开（预览+编辑）错误日志分析

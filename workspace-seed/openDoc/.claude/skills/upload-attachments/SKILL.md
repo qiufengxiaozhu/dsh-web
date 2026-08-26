@@ -1,7 +1,6 @@
 ---
-name: 附件读取
+name: upload-attachments
 description: 用户通过网页上传的附件（文件/zip 压缩包）的读取方式。当用户提到"附件""上传的文件""我传的文件"时参考本说明。
-disable-model-invocation: true
 ---
 
 # 用户上传的附件
