@@ -24,4 +24,7 @@ services:
       # 未声明 input 的模型默认支持识图，DSH_PROVIDERS_DEFAULT_VISION=0 关闭）。
       DSH_LLM_PROVIDERS: ${DSH_LLM_PROVIDERS:-}
       DSH_PROVIDERS_DEFAULT_VISION: ${DSH_PROVIDERS_DEFAULT_VISION:-}
+      # 权限预设：默认 danger-full-access（无沙盒+免审批），容器内沙盒后端
+      # 不可用时避免每条命令都触发审批。设 workspace-write 恢复沙盒。
+      DSH_PERMISSION_MODE: ${DSH_PERMISSION_MODE:-danger-full-access}
     restart: unless-stopped

@@ -169,6 +169,12 @@ if [ -n "${DSH_LLM_PROVIDERS:-}" ]; then
   ' || { echo "[entrypoint] DSH_LLM_PROVIDERS 合并失败，继续用现有 settings.yaml" >&2; }
 fi
 
+# 权限预设：容器内常无 bwrap/Landlock 可用后端，workspace-write 沙盒会
+# fail-closed 报 SANDBOX_UNAVAILABLE，模型每条命令都要走人工审批，体验极差。
+# 容器本身已是隔离边界（仅挂 /data 与 /workspace），默认切到 danger-full-access
+#（审批策略随之变 never）；设 DSH_PERMISSION_MODE=workspace-write 恢复沙盒默认。
+export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-danger-full-access}"
+
 TRUST_ARGS=()
 for authority in ${DSH_TRUSTED_HOSTS:-}; do
   TRUST_ARGS+=(--trusted-host "$authority")
