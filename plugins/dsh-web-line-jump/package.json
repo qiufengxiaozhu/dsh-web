@@ -1,0 +1,28 @@
+{
+  "name": "@agent-hub/dsh-web-line-jump",
+  "version": "0.1.0",
+  "description": "点击回复中的「路径:行号」在右侧栏预览并定位到指定行（增强 chatFileMentions 的行内代码解析）",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "line-jump",
+    "preview"
+  ],
+  "license": "MIT"
+}

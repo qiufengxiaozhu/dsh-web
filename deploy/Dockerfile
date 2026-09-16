@@ -7,10 +7,20 @@ RUN npm install -g pnpm@11 @deepseek-ai/dsh@${DSH_VERSION}
 RUN DSH_HOME=/opt/seed/.dsh HOME=/root \
     dsh plugin --profile web add dsh-web-startup-auth --config.auto-install-peers=false
 
-# 2、预置默认工作区（logAnalyze，含工作区级 skills 与 AGENTS.md），
+# 2、安装本地自定义插件（纯客户端：行号跳转）
+COPY plugins /opt/seed/plugins
+RUN DSH_HOME=/opt/seed/.dsh HOME=/root \
+    dsh plugin --profile web add /opt/seed/plugins/dsh-web-line-jump --config.auto-install-peers=false
+# pnpm 以相对 symlink 落盘 link: 依赖，种子 profile 拷进 /data 后路径失效；
+# 解引用为真实目录，随 profile 一起拷贝即可用。
+RUN cd /opt/seed/.dsh/profiles/web/node_modules/@agent-hub \
+    && rm dsh-web-line-jump \
+    && cp -r /opt/seed/plugins/dsh-web-line-jump dsh-web-line-jump
+
+# 3、预置默认工作区（logAnalyze，含工作区级 skills 与 AGENTS.md），
 COPY workspace /opt/seed/workspace
 
-# 3、种子插件清单：entrypoint 逐个检查、缺哪个补哪个（增量同步）。
+# 4、种子插件清单：entrypoint 逐个检查、缺哪个补哪个（增量同步）。
 RUN cd /opt/seed/.dsh/profiles/web \
     && node -e "const p=require('./package.json'); \
         const list=(p.dsh?.profile?.bundles||[]).filter(n=>!n.startsWith('@deepseek-ai/')); \

@@ -1,0 +1,9 @@
+# dsh-web-line-jump bundle patch.
+#
+# Registers the plugin loader entry for the line-jump plugin
+# (client-only: resolves `path:line` inline-code mentions into
+# line-targeted preview opens in the right sidebar).
+
+- insert:
+    - id: agent-hub-web-line-jump
+      name: '@agent-hub/dsh-web-line-jump'
