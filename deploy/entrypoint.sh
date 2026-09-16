@@ -99,7 +99,7 @@ for ws in /opt/seed/workspace-seed/*; do
   else
     # 已存在的工作区：skills/AGENTS.md 每次启动强制以镜像为最新覆盖，
     # 防止对话过程中大模型按用户要求改动这些内容后偏离源代码。
-    for item in .claude/skills AGENTS.md; do
+    for item in .dsh/skills AGENTS.md; do
       if [ -e "$ws/$item" ]; then
         rm -rf "/workspace/$name/$item"
         cp -a "$ws/$item" "/workspace/$name/$item"
@@ -112,8 +112,8 @@ done
 # 覆盖写制造阻力：普通 write/edit 会因权限被拒。dsh 的 workspace-write
 # 沙箱下 rm+重写也能绕过 chmod（目录本身可写），所以这层是"防误改"而
 # 非安全边界；真正的保障仍靠每次启动的强制覆盖（上一段）。
-find /workspace -path '*/.claude/skills*' -type d -exec chmod 555 {} + 2>/dev/null || true
-find /workspace -path '*/.claude/skills*' -type f -exec chmod 444 {} + 2>/dev/null || true
+find /workspace -path '*/.dsh/skills*' -type d -exec chmod 555 {} + 2>/dev/null || true
+find /workspace -path '*/.dsh/skills*' -type f -exec chmod 444 {} + 2>/dev/null || true
 find /workspace -maxdepth 2 -name AGENTS.md -exec chmod 444 {} + 2>/dev/null || true
 
 # settings.yaml 后处理：dsh 对不在内置模型目录里的模型一律视为仅文本，

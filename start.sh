@@ -26,14 +26,14 @@ export DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 # 认证凭据同理：插件按 os.homedir()/.dsh/web-auth.json 存取，固定到真实 ~/.dsh。
 export DSH_WEB_AUTH_FILE="${DSH_WEB_AUTH_FILE:-$DSH_HOME/web-auth.json}"
 
-# 首次初始化工作区；已存在的只补 .claude 与 AGENTS.md，不覆盖用户内容。
+# 首次初始化工作区；已存在的只补 .dsh 与 AGENTS.md，不覆盖用户内容。
 mkdir -p "$WS_DIR"
 for ws in workspace-seed/*; do
   name="$(basename "$ws")"
   if [ ! -d "$WS_DIR/$name" ]; then
     cp -a "$ws" "$WS_DIR/$name"
   else
-    for item in .claude AGENTS.md; do
+    for item in .dsh AGENTS.md; do
       [ -e "$ws/$item" ] && [ ! -e "$WS_DIR/$name/$item" ] && cp -a "$ws/$item" "$WS_DIR/$name/$item"
     done
   fi
