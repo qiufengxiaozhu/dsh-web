@@ -9,7 +9,7 @@ DESKTOP=/mnt/c/Users/lenovocloud/Desktop
 IMAGE=dsh
 OUT="$DESKTOP/dsh-web.tar.gz"
 
-echo "[build] 构建 $IMAGE（dsh 0.1.0-rc.7 + dsh-web-startup-auth，均来自 npm）"
+echo "[build] 构建 $IMAGE（dsh ${DSH_VERSION:-0.1.6-alpha.1} + 插件：startup-auth / line-jump / dsh-tasks）"
 # 构建上下文上移到仓库根目录，以便把 workspace（与 deploy 平级）打进镜像。
 docker build -f Dockerfile -t "$IMAGE" ..
 

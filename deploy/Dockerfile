@@ -7,6 +7,10 @@ RUN npm install -g pnpm@11 @deepseek-ai/dsh@${DSH_VERSION}
 RUN DSH_HOME=/opt/seed/.dsh HOME=/root \
     dsh plugin --profile web add dsh-web-startup-auth --config.auto-install-peers=false
 
+# 1.1、定时任务插件（cron 到点新开会话提交提示词，设置页管理）。
+RUN DSH_HOME=/opt/seed/.dsh HOME=/root \
+    dsh plugin --profile web add @weibaohui/dsh-tasks --config.auto-install-peers=false
+
 # 2、安装本地自定义插件（纯客户端：行号跳转）
 COPY plugins /opt/seed/plugins
 RUN DSH_HOME=/opt/seed/.dsh HOME=/root \
