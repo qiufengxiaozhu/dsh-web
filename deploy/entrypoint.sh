@@ -99,9 +99,11 @@ for ws in /opt/seed/workspace/*; do
   else
     # 已存在的工作区：skills/AGENTS.md 每次启动强制以镜像为最新覆盖，
     # 防止对话过程中大模型按用户要求改动这些内容后偏离源代码。
+    # 父目录一并 mkdir -p：老数据卷的工作区可能没有 .dsh（cp 不建中间目录）。
     for item in .dsh/skills AGENTS.md; do
       if [ -e "$ws/$item" ]; then
         rm -rf "/workspace/$name/$item"
+        mkdir -p "/workspace/$name/$(dirname "$item")"
         cp -a "$ws/$item" "/workspace/$name/$item"
       fi
     done
