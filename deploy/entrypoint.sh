@@ -173,6 +173,12 @@ fi
 # 容器本身已是隔离边界）。
 export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-workspace-write}"
 
+# compose 的 `${VAR:-}` 写法在 .env 未配置时会把空字符串传进容器（而非"未设置"）；
+# dsh-llm-deepseek 对空 baseURL 会 new URL('') 直接抛 Invalid URL 拒绝启动。
+# 启动前清掉空值，让插件回落到内置默认（官方 api.deepseek.com）。
+if [ -z "${DEEPSEEK_API_KEY:-}" ]; then unset DEEPSEEK_API_KEY; fi
+if [ -z "${DEEPSEEK_BASE_URL:-}" ]; then unset DEEPSEEK_BASE_URL; fi
+
 TRUST_ARGS=()
 for authority in ${DSH_TRUSTED_HOSTS:-}; do
   TRUST_ARGS+=(--trusted-host "$authority")
