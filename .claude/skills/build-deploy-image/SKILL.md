@@ -16,7 +16,7 @@ cd /opt/dsh-web && ./deploy/build.sh
 脚本内部做三件事（按约定**只构建导出，不启动容器**）：
 
 1. `docker build -f deploy/Dockerfile -t dsh ..`（构建上下文是仓库根目录，
-   因为要把 `workspace-seed/` 和 `dsh-plugins/` 打进镜像）
+   因为要把 `workspace/` 打进镜像）
 2. `docker save dsh | gzip > /mnt/c/Users/lenovocloud/Desktop/dsh-web.tar.gz`
 3. 输出产物路径
 

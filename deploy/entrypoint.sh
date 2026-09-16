@@ -91,7 +91,7 @@ sync_plugins() {
 
 # 预置默认工作区：镜像构建时装好的 logAnalyze（含 skills），首次启动
 # 拷进数据卷；工作区其余内容不覆盖。
-for ws in /opt/seed/workspace-seed/*; do
+for ws in /opt/seed/workspace/*; do
   name="$(basename "$ws")"
   if [ ! -d "/workspace/$name" ]; then
     echo "[entrypoint] 初始化默认工作区 /workspace/$name"

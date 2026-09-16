@@ -8,7 +8,7 @@ RUN DSH_HOME=/opt/seed/.dsh HOME=/root \
     dsh plugin --profile web add dsh-web-startup-auth --config.auto-install-peers=false
 
 # 2、预置默认工作区（logAnalyze，含工作区级 skills 与 AGENTS.md），
-COPY workspace-seed /opt/seed/workspace-seed
+COPY workspace /opt/seed/workspace
 
 # 3、种子插件清单：entrypoint 逐个检查、缺哪个补哪个（增量同步）。
 RUN cd /opt/seed/.dsh/profiles/web \

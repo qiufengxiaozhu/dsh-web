@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 本地开发启动：直接用宿主机的 dsh + web profile，不构建镜像。
-# 工作区放在 ~/dsh-workspaces（首次从 workspace-seed 拷贝）。
+# 工作区放在 ~/dsh-workspaces（首次从 workspace 拷贝）。
 # 插件清单装在 ~/.dsh/profiles/web（dsh plugin --profile web add ...）。
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -28,7 +28,7 @@ export DSH_WEB_AUTH_FILE="${DSH_WEB_AUTH_FILE:-$DSH_HOME/web-auth.json}"
 
 # 首次初始化工作区；已存在的只补 .dsh 与 AGENTS.md，不覆盖用户内容。
 mkdir -p "$WS_DIR"
-for ws in workspace-seed/*; do
+for ws in workspace/*; do
   name="$(basename "$ws")"
   if [ ! -d "$WS_DIR/$name" ]; then
     cp -a "$ws" "$WS_DIR/$name"
