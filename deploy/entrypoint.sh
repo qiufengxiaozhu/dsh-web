@@ -98,10 +98,8 @@ for ws in /opt/seed/workspace-seed/*; do
     cp -a "$ws" "/workspace/$name"
   else
     # 已存在的工作区：skills/CLAUDE.md 每次启动强制以镜像为最新覆盖，
-    # 防止对话过程中大模型按用户要求改动这些内容后偏离源代码；
-    # tools/（OCR 等离线工具及其 node_modules/语言包）同样强制覆盖，
-    # 否则固化进镜像的工具在已部署的工作区里永远同步不到。
-    for item in .claude/skills CLAUDE.md tools; do
+    # 防止对话过程中大模型按用户要求改动这些内容后偏离源代码。
+    for item in .claude/skills CLAUDE.md; do
       if [ -e "$ws/$item" ]; then
         rm -rf "/workspace/$name/$item"
         cp -a "$ws/$item" "/workspace/$name/$item"
@@ -117,9 +115,6 @@ done
 find /workspace -path '*/.claude/skills*' -type d -exec chmod 555 {} + 2>/dev/null || true
 find /workspace -path '*/.claude/skills*' -type f -exec chmod 444 {} + 2>/dev/null || true
 find /workspace -maxdepth 2 -name CLAUDE.md -exec chmod 444 {} + 2>/dev/null || true
-# OCR 工具的 node_modules 需要可写？不需要——只读执行即可；语言包同样只读。
-find /workspace -maxdepth 4 -path '*/tools/*' -type f -exec chmod 444 {} + 2>/dev/null || true
-find /workspace -maxdepth 4 -path '*/tools/*' -type d -exec chmod 555 {} + 2>/dev/null || true
 
 # settings.yaml 后处理：dsh 对不在内置模型目录里的模型一律视为仅文本，
 # 界面配置的自定义 provider 模型（glm 等）会被 MODEL_DOES_NOT_SUPPORT_IMAGES

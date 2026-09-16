@@ -1,8 +1,0 @@
-# dsh-workspace-file-upload bundle patch.
-#
-# Registers the plugin loader entry for the workspace file upload plugin
-# (host-side upload/unzip routes + client-side file button and chips).
-
-- insert:
-    - id: agent-hub-workspace-file-upload
-      name: '@agent-hub/dsh-workspace-file-upload'

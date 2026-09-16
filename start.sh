@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # 本地开发启动：直接用宿主机的 dsh + web profile，不构建镜像。
-# 工作区放在 ~/dsh-workspaces（首次从 workspace-seed 拷贝），插件以 link: 直连
-# dsh-plugins/ 源码目录 —— 改完代码重启本脚本即生效，无需 build。
+# 工作区放在 ~/dsh-workspaces（首次从 workspace-seed 拷贝）。
 # 插件清单装在 ~/.dsh/profiles/web（dsh plugin --profile web add ...）。
 set -euo pipefail
 cd "$(dirname "$0")"
