@@ -11,6 +11,10 @@ services:
       - ./dsh-data:/data
       # agent 工作区：宿主机目录挂到 /workspace；入口脚本把 HOME 指到它。
       - ./workspace:/workspace
+      # 每日日志源：宿主机目录放前一天日志压缩包 → 工作区内 daily/<源名>，
+      # 定时任务读包分析、报告写回同目录（宿主机即可见）。新增日志源 =
+      # 再加一行挂载到 /workspace/logAnalyze/daily/<源名>，然后在网页建定时任务。
+      - ${DSH_DEMOSITE_LOG_DIR:-/opt/dsh-web/demosite-log}:/workspace/logAnalyze/daily/demosite
     environment:
       # 模型访问（聊天必需）。
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
@@ -24,7 +28,9 @@ services:
       # 未声明 input 的模型默认支持识图，DSH_PROVIDERS_DEFAULT_VISION=0 关闭）。
       DSH_LLM_PROVIDERS: ${DSH_LLM_PROVIDERS:-}
       DSH_PROVIDERS_DEFAULT_VISION: ${DSH_PROVIDERS_DEFAULT_VISION:-}
-      # 权限预设：默认 danger-full-access（无沙盒+免审批），容器内沙盒后端
-      # 不可用时避免每条命令都触发审批。设 workspace-write 恢复沙盒。
-      DSH_PERMISSION_MODE: ${DSH_PERMISSION_MODE:-danger-full-access}
+      # 权限预设：默认 workspace-write（仅工作区内可写，landlock 沙箱+审批 ask）。
+      # 新版 dsh 自带 landlock launcher，容器共享宿主内核即可用；若日志提示
+      # SANDBOX_UNAVAILABLE（无沙盒后端），改回 danger-full-access（免沙盒免审批，
+      # 容器本身已是隔离边界）。
+      DSH_PERMISSION_MODE: ${DSH_PERMISSION_MODE:-workspace-write}
     restart: unless-stopped
