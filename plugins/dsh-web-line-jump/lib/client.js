@@ -19,6 +19,7 @@
 window.__ModuleLoader__.load({
   id: "@agent-hub/dsh-web-line-jump",
   factory: () => {
+    console.info("[line-jump] factory materialized");
     const module = { exports: {} };
     const exports = module.exports;
     Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
@@ -59,16 +60,25 @@ window.__ModuleLoader__.load({
       }
     }
 
+    const DEBUG = true; // 调试期打开；验证通过后改 false
+    const log = (...args) => console.info("[line-jump]", ...args);
+
     function apply(ctx) {
+      if (DEBUG) log("apply called; ctx.get =", typeof ctx.get);
       let timer = null;
       timer = setInterval(() => {
         let svc = null;
+        let err = null;
         try {
           svc = ctx.get("chatFileMentions");
-        } catch {
-          svc = null;
+        } catch (e) {
+          err = e;
         }
-        if (!svc || svc.__dshLineJump || typeof svc.forClosing !== "function") return;
+        if (DEBUG && err !== null && err !== undefined) log("ctx.get error:", err && err.message);
+        if (!svc || svc.__dshLineJump || typeof svc.forClosing !== "function") {
+          if (DEBUG) log("poll: svc =", svc && "object", "patched =", !!(svc && svc.__dshLineJump));
+          return;
+        }
         const origForClosing = svc.forClosing;
         svc.forClosing = function wrapped(owner, sessionId) {
           let resolver;
@@ -125,10 +135,15 @@ window.__ModuleLoader__.load({
         };
         try {
           svc.__dshLineJump = true;
-        } catch {}
+          if (DEBUG) log("patched chatFileMentions ✔");
+        } catch (e) {
+          if (DEBUG) log("patch failed:", e && e.message);
+        }
       }, POLL_MS);
       try {
-        ctx.effect(() => clearInterval(timer));
+        // cordis effect 约定：立即执行回调、返回值作为清理函数——
+        // 所以这里必须返回一个 disposer，而不是直接 clearInterval。
+        ctx.effect(() => () => clearInterval(timer));
       } catch {}
     }
 
