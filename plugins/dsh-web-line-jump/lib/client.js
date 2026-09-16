@@ -60,7 +60,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    const DEBUG = true; // 调试期打开；验证通过后改 false
+    const DEBUG = false; // 调试探针开关（factory/apply/forClosing/resolve 日志）
     const log = (...args) => console.info("[line-jump]", ...args);
 
     function apply(ctx) {
@@ -81,13 +81,18 @@ window.__ModuleLoader__.load({
         }
         const origForClosing = svc.forClosing;
         svc.forClosing = function wrapped(owner, sessionId) {
+          if (DEBUG) log("forClosing called; status =", owner?.turn?.status, "seq =", owner?.seq, "openFile =", typeof owner?.openFile);
           let resolver;
           try {
             resolver = origForClosing.call(this, owner, sessionId);
           } catch {
             return undefined;
           }
-          if (!resolver || typeof resolver.resolve !== "function") return resolver;
+          if (!resolver || typeof resolver.resolve !== "function") {
+            if (DEBUG) log("forClosing → no resolver (本轮无交付/产出文件)");
+            return resolver;
+          }
+          if (DEBUG) log("forClosing → resolver ready");
           return {
             resolve(value) {
               if (typeof value !== "string") return resolver.resolve(value);
@@ -98,10 +103,12 @@ window.__ModuleLoader__.load({
               // 逐级剥离尝试：`p:12:7707` → `p:12` → `p`，任一级命中交付
               // 集合即可点击（容忍交付路径本身带了 `:12` 之类的行号残留）。
               let hit;
-              for (const candidate of candidatesOf(trimmed, parsed)) {
+              const cands = candidatesOf(trimmed, parsed);
+              for (const candidate of cands) {
                 hit = tryResolve(resolver, candidate);
                 if (hit) break;
               }
+              if (DEBUG) log("resolve:", JSON.stringify(trimmed), "candidates:", JSON.stringify(cands), "→", hit ? "HIT" : "inert");
               if (!hit) return undefined;
               // 打开用完全剥离后的真实路径；行号取最后一段数字
               // （`p:7665` → 7665；`p:12:7707` → 7707）。
