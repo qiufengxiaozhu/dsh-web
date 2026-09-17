@@ -175,12 +175,12 @@ if [ -n "${DSH_LLM_PROVIDERS:-}" ]; then
   ' || { echo "[entrypoint] DSH_LLM_PROVIDERS 合并失败，继续用现有 settings.yaml" >&2; }
 fi
 
-# 权限预设：默认 workspace-write（仅工作区内可写 + 审批 ask）。新版 dsh 自带
-# landlock launcher（node-addon-system-linux-x64），容器共享宿主内核，只要内核
-# 启用 CONFIG_SECURITY_LANDLOCK 即可用，无需 bwrap。若启动日志报
-# SANDBOX_UNAVAILABLE（内核过旧等），改回 danger-full-access（免沙盒免审批，
-# 容器本身已是隔离边界）。
-export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-workspace-write}"
+# 权限预设：默认 danger-full-access（免沙盒免审批）。workspace-write 需要
+# 宿主内核启用 Landlock 或容器内有 bwrap，二者皆无时沙箱 fail-closed 拒绝
+# 执行（"no sandbox backend is usable"），模型每条命令都要人工升权审批，
+# 无人值守的定时任务会直接卡死——2026-09-17 服务器实测确认。容器本身已是
+# 隔离边界；本机开发（WSL2 内核支持 Landlock）可设 workspace-write 开沙箱。
+export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-danger-full-access}"
 
 # compose 的 `${VAR:-}` 写法在 .env 未配置时会把空字符串传进容器（而非"未设置"）；
 # dsh-llm-deepseek 对空 baseURL 会 new URL('') 直接抛 Invalid URL 拒绝启动。

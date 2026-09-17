@@ -26,10 +26,10 @@ export DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 # 认证凭据同理：插件按 os.homedir()/.dsh/web-auth.json 存取，固定到真实 ~/.dsh。
 export DSH_WEB_AUTH_FILE="${DSH_WEB_AUTH_FILE:-$DSH_HOME/web-auth.json}"
 
-# 权限预设：默认 workspace-write（工作区内可写 + landlock 沙箱，审批 ask）。
-# 新版 dsh 自带 landlock launcher，WSL2 内核已启用 CONFIG_SECURITY_LANDLOCK，
-# 沙箱可用；容器内如遇 SANDBOX_UNAVAILABLE 再设 danger-full-access 退回。
-export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-workspace-write}"
+# 权限预设：本机（WSL2 内核支持 Landlock）可用 workspace-write 开沙箱；
+# 服务器容器宿主内核无 Landlock/bwrap，沙箱 fail-closed 会逐条审批，故
+# 默认 danger-full-access（同线上部署）。
+export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-danger-full-access}"
 
 # 首次初始化工作区；已存在的只补 .dsh 与 AGENTS.md，不覆盖用户内容。
 mkdir -p "$WS_DIR"

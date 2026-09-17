@@ -28,9 +28,9 @@ services:
       # 未声明 input 的模型默认支持识图，DSH_PROVIDERS_DEFAULT_VISION=0 关闭）。
       DSH_LLM_PROVIDERS: ${DSH_LLM_PROVIDERS:-}
       DSH_PROVIDERS_DEFAULT_VISION: ${DSH_PROVIDERS_DEFAULT_VISION:-}
-      # 权限预设：默认 workspace-write（仅工作区内可写，landlock 沙箱+审批 ask）。
-      # 新版 dsh 自带 landlock launcher，容器共享宿主内核即可用；若日志提示
-      # SANDBOX_UNAVAILABLE（无沙盒后端），改回 danger-full-access（免沙盒免审批，
-      # 容器本身已是隔离边界）。
-      DSH_PERMISSION_MODE: ${DSH_PERMISSION_MODE:-workspace-write}
+      # 权限预设：默认 danger-full-access（免沙盒免审批）。workspace-write 需
+      # 宿主内核支持 Landlock（或容器内有 bwrap），否则沙箱 fail-closed，每条
+      # 命令都弹审批、定时任务会卡死（2026-09-17 服务器实测）。本机开发若内核
+      # 支持可设 workspace-write 开沙箱（仅工作区内可写）。
+      DSH_PERMISSION_MODE: ${DSH_PERMISSION_MODE:-danger-full-access}
     restart: unless-stopped
