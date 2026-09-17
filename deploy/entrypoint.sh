@@ -175,6 +175,30 @@ if [ -n "${DSH_LLM_PROVIDERS:-}" ]; then
   ' || { echo "[entrypoint] DSH_LLM_PROVIDERS 合并失败，继续用现有 settings.yaml" >&2; }
 fi
 
+# 权限默认值对齐：设置页/会话创建会把 permission.defaultPreset 持久化进
+# settings.yaml，显式存储值优先于 DSH_PERMISSION_MODE 部署默认——切回
+# danger-full-access 后，旧数据卷残留的 workspace-write 仍会给新会话钉住
+# 旧预设（设置页也照它显示）。启动时强制对齐到部署默认。
+if [ -f "$DSH_SETTINGS" ]; then
+  DSH_SETTINGS="$DSH_SETTINGS" DSH_PERMISSION_MODE="$DSH_PERMISSION_MODE" node -e '
+    const fs = require("fs");
+    const { parse, stringify } = require(require("path").join(
+      require("child_process").execSync("npm root -g").toString().trim(),
+      "@deepseek-ai/dsh/node_modules/yaml"));
+    const path = process.env.DSH_SETTINGS;
+    const mode = process.env.DSH_PERMISSION_MODE;
+    let settings = {};
+    try { settings = parse(fs.readFileSync(path, "utf8")) || {}; } catch {}
+    const current = settings.permission?.defaultPreset;
+    if (current !== mode) {
+      settings.permission = settings.permission || {};
+      settings.permission.defaultPreset = mode;
+      fs.writeFileSync(path, stringify(settings));
+      console.log("[entrypoint] 权限默认预设已对齐部署配置: " + current + " -> " + mode);
+    }
+  ' || echo "[entrypoint] permission.defaultPreset 对齐失败，继续用现有 settings.yaml" >&2
+fi
+
 # 权限预设：默认 danger-full-access（免沙盒免审批）。workspace-write 需要
 # 宿主内核启用 Landlock 或容器内有 bwrap，二者皆无时沙箱 fail-closed 拒绝
 # 执行（"no sandbox backend is usable"），模型每条命令都要人工升权审批，
