@@ -28,6 +28,10 @@ sync_plugins() {
   while IFS= read -r pkg; do
     [ -n "$pkg" ] || continue
     seed_dir="/opt/seed/.dsh/profiles/web/node_modules/$pkg"
+    if [ ! -d "$seed_dir" ]; then
+      echo "[entrypoint] 种子中无 $pkg，跳过" >&2
+      continue
+    fi
     # 本地插件判据：种子 package.json 里该依赖是 link:/file: 形式
     #（构建时已解引用成实体目录）。本地插件强制覆盖，npm 插件已装不动。
     force=false
@@ -36,34 +40,9 @@ sync_plugins() {
       const spec = deps['$pkg'] || '';
       process.exit(/^(link|file):/.test(spec) ? 0 : 1);
     " && force=true
-    if [ "$force" = false ] \
-      && node -e "require.resolve('$pkg/package.json', { paths: ['$PROFILE_DIR'] })" >/dev/null 2>&1; then
-      continue
-    fi
-    [ "$force" = true ] && echo "[entrypoint] 本地插件 $pkg 强制覆盖同步"
-    [ "$force" = false ] && echo "[entrypoint] 数据卷缺插件 $pkg，从镜像种子拷入"
-    # node_modules 里按 scope/name 落盘（@scope/name 或 name）。
-    case "$pkg" in
-      @*/*) scope="${pkg%%/*}"; name="${pkg#*/}"; dir="$PROFILE_DIR/node_modules/$scope/$name" ;;
-      *)    dir="$PROFILE_DIR/node_modules/$pkg" ;;
-    esac
-    mkdir -p "$(dirname "$dir")"
-    # 种子以解引用的真实目录分发（link: 依赖已在构建期 cp 成实体）。
-    if [ ! -d "$seed_dir" ]; then
-      echo "[entrypoint] 种子中无 $pkg，跳过" >&2; continue
-    fi
-    # 强制覆盖：先删旧目录再拷，保证与镜像种子完全一致。
-    [ "$force" = true ] && rm -rf "$dir"
-    cp -a "$seed_dir" "$dir"
-    # pnpm hoisted 布局：插件的 peer/host 依赖提升在 node_modules 顶层与 .pnpm。
-    # 全新数据卷缺这些骨架，逐项补齐（已存在的项不动，保留数据卷现状）。
-    local item
-    for item in /opt/seed/.dsh/profiles/web/node_modules/* /opt/seed/.dsh/profiles/web/node_modules/.pnpm /opt/seed/.dsh/profiles/web/node_modules/.*.yaml /opt/seed/.dsh/profiles/web/node_modules/.*.json; do
-      [ -e "$item" ] || continue
-      local base; base="$(basename "$item")"
-      [ -e "$PROFILE_DIR/node_modules/$base" ] || cp -a "$item" "$PROFILE_DIR/node_modules/"
-    done
-    # 合并 package.json：dependencies 版本以种子为准，bundles 追加缺失项。
+    # bundles/dependencies 合并对每个插件无条件执行：老版本 entrypoint 只在
+    # 拷包时合并，数据卷里"已装"的插件（如手动装过包但没注册 bundles 的）
+    # 会被跳过且永远不加载——包在、bundle 不在。
     ( cd /opt/seed/.dsh/profiles/web \
       && node -e "
         const fs = require('fs');
@@ -83,6 +62,36 @@ sync_plugins() {
         if (!dst.dsh.profile.bundles.includes('$pkg')) dst.dsh.profile.bundles.push('$pkg');
         fs.writeFileSync(dstPath, JSON.stringify(dst, null, 2) + '\n');
       " )
+    # npm 插件已装且版本与镜像一致 → 无需拷贝；缺失或版本不符（镜像升级、
+    # 旧版残留）→ 覆盖为镜像版。本地插件始终强制覆盖。
+    if [ "$force" = false ] \
+      && node -e "
+        const seedV = require('/opt/seed/.dsh/profiles/web/node_modules/$pkg/package.json').version;
+        const localV = require('$pkg/package.json', { paths: ['$PROFILE_DIR'] }).version;
+        process.exit(seedV === localV ? 0 : 1);
+      " 2>/dev/null; then
+      continue
+    fi
+    [ "$force" = true ] && echo "[entrypoint] 本地插件 $pkg 强制覆盖同步"
+    [ "$force" = false ] && echo "[entrypoint] 插件 $pkg 缺失或版本不符，从镜像种子覆盖同步"
+    # node_modules 里按 scope/name 落盘（@scope/name 或 name）。
+    case "$pkg" in
+      @*/*) scope="${pkg%%/*}"; name="${pkg#*/}"; dir="$PROFILE_DIR/node_modules/$scope/$name" ;;
+      *)    dir="$PROFILE_DIR/node_modules/$pkg" ;;
+    esac
+    mkdir -p "$(dirname "$dir")"
+    # 覆盖拷贝：先删旧目录再拷，保证与镜像种子完全一致。
+    # 无条件 rm：npm 插件版本不符覆盖时 dir 已存在，不先删会嵌套拷成 dir/$name。
+    rm -rf "$dir"
+    cp -a "$seed_dir" "$dir"
+    # pnpm hoisted 布局：插件的 peer/host 依赖提升在 node_modules 顶层与 .pnpm。
+    # 全新数据卷缺这些骨架，逐项补齐（已存在的项不动，保留数据卷现状）。
+    local item
+    for item in /opt/seed/.dsh/profiles/web/node_modules/* /opt/seed/.dsh/profiles/web/node_modules/.pnpm /opt/seed/.dsh/profiles/web/node_modules/.*.yaml /opt/seed/.dsh/profiles/web/node_modules/.*.json; do
+      [ -e "$item" ] || continue
+      local base; base="$(basename "$item")"
+      [ -e "$PROFILE_DIR/node_modules/$base" ] || cp -a "$item" "$PROFILE_DIR/node_modules/"
+    done
     node -e "require.resolve('$pkg/package.json', { paths: ['$PROFILE_DIR'] })" \
       || { echo "[entrypoint] $pkg 拷入后仍无法解析，终止" >&2; exit 1; }
   done < /opt/seed/plugins.txt
