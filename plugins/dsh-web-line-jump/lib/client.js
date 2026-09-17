@@ -100,19 +100,56 @@ window.__ModuleLoader__.load({
       let timer = null;
       let scanTimer = null;
 
-      // DOM 补偿扫描：见文件头注释第 2 点。
+      // DOM 补偿扫描（第二版）：不依赖 forClosing 被调用。实测刷新浏览器后
+      // dsh 恢复历史会话时 turn 载体（owner）始终为 undefined，原生渲染路径
+      // 与「记录 latestOwner」的方案全部失效；而切会话正常。改为直接从
+      // sessions 服务取当前会话与 cwd，对形状像路径的裸行内代码一律渲染
+      // 可点击按钮，点击时拼 dsh-resource 地址交 sidebarRight 打开并定位行。
+      const DEBUG = false; // 排障时改 true：scan/forClosing 各分支日志
+      const FILE_PREFIX = "dsh-resource://file/session/";
+      const encodeSegment = (s) => encodeURIComponent(s).replace(/%3A/gi, ":");
+      const sessionFileAddress = (sessionId, path) =>
+        FILE_PREFIX + encodeSegment(sessionId) + "/" + path.split("/").map(encodeSegment).join("/");
+      const isAbsoluteWorkspacePath = (p) => p.startsWith("/") || /^[A-Za-z]:[/\\]/.test(p) || p.startsWith("\\\\");
+      function fileAddress(sessionId, cwd, path) {
+        const normalized = path.replace(/\\/g, "/");
+        if (!isAbsoluteWorkspacePath(normalized)) return sessionFileAddress(sessionId, normalized);
+        const root = cwd === undefined ? "" : cwd.replace(/\\/g, "/").replace(/\/+$/, "");
+        if (root !== "" && normalized.startsWith(root + "/")) {
+          return sessionFileAddress(sessionId, normalized.slice(root.length + 1));
+        }
+        return sessionFileAddress(sessionId, normalized);
+      }
+      // 形状过滤：完整路径感（含 /、无空白、带扩展名），避免把普通代码词变按钮。
+      function looksLikePath(text) {
+        if (text.length < 4 || text.length > 300 || /\s/.test(text)) return false;
+        if (!text.includes("/")) return false;
+        const base = text.split("/").pop();
+        return /\.[A-Za-z0-9]{1,10}$/.test(base) && !base.endsWith(".");
+      }
       function scan() {
         try {
-          if (!latestOwner) return;
-          const svc = ctx.get("chatFileMentions");
-          if (!svc || !svc.__dshLineJump) return;
-          let resolver;
-          try {
-            resolver = svc.forClosing(latestOwner, latestSessionId);
-          } catch {
+          const sessions = ctx.get("sessions");
+          if (!sessions || !sessions.list) return;
+          const snap = sessions.list.getSnapshot();
+          const sessionId = snap.current;
+          if (!sessionId) {
+            if (DEBUG) console.info("[line-jump] scan: 无当前会话（sessions.list.current 为空）");
             return;
           }
-          if (!resolver || typeof resolver.resolve !== "function") return;
+          const cwd = snap.byId[sessionId]?.cwd;
+          let sb;
+          try {
+            sb = ctx.get("sidebarRight");
+          } catch {
+            sb = null;
+          }
+          if (!sb || typeof sb.openResource !== "function") {
+            if (DEBUG) console.info("[line-jump] scan: sidebarRight 服务不可用");
+            return;
+          }
+          let codes = 0;
+          let hits = 0;
           for (const el of document.querySelectorAll("code")) {
             if (el.closest("pre")) continue; // 代码块内不处理
             if (el.dataset.dshLj) continue; // 已处理过（1=补偿过，2=原生已有）
@@ -121,44 +158,47 @@ window.__ModuleLoader__.load({
               continue;
             }
             const text = (el.textContent || "").trim();
-            if (!text || text.length > 300 || /[\r\n]/.test(text)) continue;
+            // 形状检查必须用剥离行号后的纯路径：`xxx.log:2` 以 `:2` 结尾，
+            // 直接检查会因不满足"扩展名结尾"而漏掉所有带行号的引用。
+            if (!looksLikePath(stripAll(text))) continue;
+            codes++;
             const parsed = parseTrailing(text);
-            let hit;
-            for (const candidate of candidatesOf(text, parsed)) {
-              hit = tryResolve(resolver, candidate);
-              if (hit) break;
-            }
-            if (!hit) continue; // 不标记：交付状态就绪后下轮再试
-            const owner = latestOwner;
+            const owner = latestOwner; // 仅作 openFile 兜底（正常渲染路径产物）
             const openPath = stripAll(text);
             const line = parsed ? parsed.nums[parsed.nums.length - 1] : undefined;
+            const address = fileAddress(sessionId, cwd, openPath);
             const btn = document.createElement("button");
             btn.type = "button";
             btn.className = "dsh-lj-mention";
-            btn.title = hit.title || openPath;
+            btn.title = openPath;
             btn.textContent = text; // 原生按钮还带一个文件图标，这里省略
             btn.addEventListener("click", (ev) => {
               ev.preventDefault();
               try {
-                const r = owner.openFile(openPath, line === undefined ? undefined : { line });
-                if (r && typeof r.catch === "function") {
-                  r.catch(() => {
-                    try {
-                      owner.openFile(openPath);
-                    } catch {}
-                  });
+                if (owner && typeof owner.openFile === "function") {
+                  const r = owner.openFile(openPath, line === undefined ? undefined : { line });
+                  if (r && typeof r.catch === "function") r.catch(() => sb.openResource(address));
+                  return;
                 }
+                sb.openResource(address, line === undefined ? undefined : { params: { line } });
               } catch {
                 try {
-                  owner.openFile(openPath);
+                  sb.openResource(address);
                 } catch {}
               }
             });
             el.textContent = "";
             el.appendChild(btn);
             el.dataset.dshLj = "1";
+            hits++;
+            if (DEBUG) console.info("[line-jump] scan: 补偿按钮 →", text, "@", address);
           }
-        } catch {}
+          if (DEBUG && (codes > 0 || hits > 0)) {
+            console.info("[line-jump] scan 完成:", { 候选: codes, 已补: hits, sessionId });
+          }
+        } catch (e) {
+          if (DEBUG) console.info("[line-jump] scan 异常:", e && e.message);
+        }
       }
 
       timer = setInterval(() => {
@@ -171,6 +211,7 @@ window.__ModuleLoader__.load({
         if (!svc || svc.__dshLineJump || typeof svc.forClosing !== "function") return;
         const origForClosing = svc.forClosing;
         svc.forClosing = function wrapped(owner, sessionId) {
+          if (DEBUG) console.info("[line-jump] forClosing 被调用, owner:", owner ? "有" : "无", "sessionId:", sessionId);
           // 记录最近一次渲染的载体，供 DOM 补偿层使用。
           latestOwner = owner;
           latestSessionId = sessionId;

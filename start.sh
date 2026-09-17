@@ -44,6 +44,20 @@ for ws in workspace/*; do
   fi
 done
 
+# 每日日志源（对应 compose 的 daily 挂载）：本地用 bind mount 把
+# /opt/dsh-web/demosite-log 挂进工作区 daily/demosite，定时任务由此读包、
+# 报告写回同级目录。mount 不跨重启，每次启动自动补挂（幂等）。
+SRC_DIR="${DSH_DEMOSITE_LOG_DIR:-/opt/dsh-web/demosite-log}"
+DST_DIR="$WS_DIR/logAnalyze/daily/demosite"
+if [ -d "$SRC_DIR" ]; then
+  mkdir -p "$DST_DIR"
+  if ! mountpoint -q "$DST_DIR" 2>/dev/null; then
+    mount --bind "$SRC_DIR" "$DST_DIR" 2>/dev/null \
+      && echo "[start] 已挂载日志源 $SRC_DIR → $DST_DIR" \
+      || echo "[start] 警告：bind mount 失败（无权限？），定时任务将读不到 $DST_DIR" >&2
+  fi
+fi
+
 # 目录选择器默认从 HOME 开始浏览。
 export HOME="$WS_DIR"
 # dsh-web-startup-auth 的会话/登录页按绑定的 host 区分：绑 0.0.0.0 才启用
