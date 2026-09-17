@@ -50,9 +50,11 @@ mv "${NAME}.incoming" "$NAME"
 log "打包完成: $(du -h "$NAME" | cut -f1)"
 
 # 推送：先传远端临时名 .uploading-*，成功后远端原子改名——
-# 避免 dsh 端在传输中途读到半个包。
+# 避免 dsh 端在传输中途读到半个包。注意 scp 的端口参数是大写 -P
+#（小写 -p 是"保留时间戳"），与 ssh 的 -p 不同。
 SSH_OPTS="-p ${TARGET_PORT} -o StrictHostKeyChecking=no -o ConnectTimeout=10"
-sshpass -p "$TARGET_PASS" scp $SSH_OPTS "$NAME" \
+SCP_OPTS="-P ${TARGET_PORT} -o StrictHostKeyChecking=no -o ConnectTimeout=10"
+sshpass -p "$TARGET_PASS" scp $SCP_OPTS "$NAME" \
   "${TARGET_USER}@${TARGET_HOST}:${TARGET_DIR}/.uploading-${NAME}"
 sshpass -p "$TARGET_PASS" ssh $SSH_OPTS \
   "${TARGET_USER}@${TARGET_HOST}" "mv ${TARGET_DIR}/.uploading-${NAME} ${TARGET_DIR}/${NAME}"
