@@ -4,13 +4,13 @@
 由 dsh-web 侧的定时任务自动分析并生成报告——形成完整闭环：
 
 ```
-日志产出方（推送方）                     dsh-web 服务器（172.16.52.27）
-/opt/zdocs/luoshu_log/*/combined-*      /opt/dsh-web/demosite-log/
+日志产出方（推送方）                                                  dsh-web 服务器（172.16.52.27）
+/opt/zdocs/luoshu_log/*/combined-*                                  /opt/dsh-web/demosite-log/
                          │  每天 01:00 crontab 触发 logCollection.sh
                          ├── tar 打包昨天的 combined/error/java 日志
                          └── scp 推送 ──────→  luoshu-log-YYYYMMDD.tar.gz
-/opt/dsh-web/demosite-log/luoshu-log-YYYYMMDD.分析报告.md   ←─ dsh 每天 09:00
-                                                            定时分析后写回同级
+                                                                      ←─ dsh 每天 09:00，定时分析后写回同级
+                                                                   /opt/dsh-web/demosite-log/luoshu-log-YYYYMMDD.分析报告.md
 ```
 
 ## 一、推送方操作（日志产出方服务器）
