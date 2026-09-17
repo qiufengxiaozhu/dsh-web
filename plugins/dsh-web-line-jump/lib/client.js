@@ -3,23 +3,28 @@
 // 原生链路（dsh v0.1.6-alpha.1）：
 //   chat 渲染消息时调用 ctx.get("chatFileMentions").forClosing(owner, sessionId)
 //   拿到一个 resolver，把行内代码文本交给 resolver.resolve(value)；
-//   命中「本轮 present 交付 / 产出文件」的 value 会被渲染成可点击样式，
+//   命中「本轮 present 交付 / 产出文件」的 value 渲染为可点击 button
+//   （<code><button class=_fileMention_xxx>…</button></code>），
 //   点击执行 resolver 返回的 open() —— 但原生 open() 固定 openFile(path)，
 //   不携带行号；且行内代码写成 `path:12` 后整串不匹配路径，直接变纯文本。
 //
-// 本插件不重新 provide（同名 service 二次注册会被 cordis 拒绝：
-// `service "..." has been registered`），而是对 ctx.get() 返回的同一个
-// 活对象做方法包装（monkey-patch）：
-//   1. 行内代码无数字后缀 → 原样委托原 resolver，行为与原生一致；
-//   2. 有 `path:num(:num)*` 后缀 → 逐级剥离后缀、每级询问原 resolver
-//      （容忍模型在交付路径或引用路径上多带行号段），任一级命中即可点击；
-//   3. open() 用完全剥离后的真实路径 + 最后一段数字作为行号调
-//      owner.openFile(path, { line })，由预览面板滚动定位到该行。
+// 两层机制：
+// 1. resolver patch：对 ctx.get() 返回的活对象做 forClosing 方法包装
+//   （cordis 同名 service 二次注册会 throw，不能重新 provide）：
+//   - `path:num(:num)*` 后缀逐级剥离、每级询问原 resolver（容忍交付路径
+//     本身带行号残留），任一级命中即可点击；
+//   - open() 用完全剥离后的真实路径 + 最后一段数字调
+//     owner.openFile(path, { line })，预览面板滚动定位到该行。
+// 2. DOM 补偿层（本文件后半）：React 渲染时机与交付状态恢复存在竞态——
+//   刷新浏览器后首屏渲染时 turn-tail / 交付状态尚未就绪，mentions 为空，
+//   行内代码渲染为裸 <code>；状态就绪后没有任何东西再触发重渲染，Button
+//   永远不出现（切换会话重新渲染才恢复）。补偿层周期扫描「文本能被
+//   resolver 命中、但 DOM 里还是裸 code」的元素，手动包一层仿原生 button。
+//   React 之后若重渲染会重建 DOM（dataset 丢失），扫描器再次补偿，幂等。
 // 任何一步异常都回退到原生行为，最坏情况退化为「不可点击」。
 window.__ModuleLoader__.load({
   id: "@agent-hub/dsh-web-line-jump",
   factory: () => {
-    console.info("[line-jump] factory materialized");
     const module = { exports: {} };
     const exports = module.exports;
     Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
@@ -27,9 +32,9 @@ window.__ModuleLoader__.load({
     // 尾部行号段：`path`、`path:7665`、`path:12:7707`（容忍 1–4 段数字）。
     const TRAILING_RE = /^(.+?)((?::\d{1,7}){1,4})$/;
     // deliverables 插件惰性物化，chatFileMentions 出现时机不定；2s 轮询
-    // 直到 patch 成功。chat 每次渲染都重新调用 forClosing，patch 生效后
-    // 新渲染即走增强逻辑。ctx.effect 在插件卸载时清理定时器。
+    // 直到 patch 成功。DOM 补偿扫描周期同。
     const POLL_MS = 2000;
+    const SCAN_MS = 2000;
 
     function parseTrailing(value) {
       const m = TRAILING_RE.exec(value);
@@ -60,39 +65,122 @@ window.__ModuleLoader__.load({
       }
     }
 
-    const DEBUG = false; // 调试探针开关（factory/apply/forClosing/resolve 日志）
-    const log = (...args) => console.info("[line-jump]", ...args);
+    function stripAll(value) {
+      let s = value;
+      for (;;) {
+        const p = parseTrailing(s);
+        if (!p) return s;
+        s = p.path;
+      }
+    }
+
+    // 仿原生 fileMention 按钮样式（原生 class 是 CSS modules 构建哈希，
+    // 随版本变，故自带样式；规则抄自原生 ._fileMention_*）。
+    const COMPENSATE_CSS =
+      "code>button.dsh-lj-mention{margin:0;padding:0;border:none;background:none;" +
+      "font:inherit;font-weight:500;color:var(--dsw-alias-link);text-decoration:none;cursor:pointer}" +
+      "code>button.dsh-lj-mention:hover,code>button.dsh-lj-mention:focus{outline:none;" +
+      "text-decoration:underline dotted var(--dsw-alias-link);text-underline-offset:3px}";
+
+    function injectStyle() {
+      if (document.querySelector("style[data-dsh-line-jump]") !== null) return;
+      const tag = document.createElement("style");
+      tag.dataset.dshLineJump = "1";
+      tag.textContent = COMPENSATE_CSS;
+      document.head.appendChild(tag);
+    }
+
+    // 当前会话最近一次渲染的 turn 载体与 resolver 来源（forClosing 每次渲染
+    // 都被 chat 调用，patch 里顺手记录；DOM 补偿层用它拿 openFile 与实时
+    // resolver——交付状态就绪后即使首屏那次不命中，新调用也能命中）。
+    let latestOwner = null;
+    let latestSessionId = null;
 
     function apply(ctx) {
-      if (DEBUG) log("apply called; ctx.get =", typeof ctx.get);
       let timer = null;
+      let scanTimer = null;
+
+      // DOM 补偿扫描：见文件头注释第 2 点。
+      function scan() {
+        try {
+          if (!latestOwner) return;
+          const svc = ctx.get("chatFileMentions");
+          if (!svc || !svc.__dshLineJump) return;
+          let resolver;
+          try {
+            resolver = svc.forClosing(latestOwner, latestSessionId);
+          } catch {
+            return;
+          }
+          if (!resolver || typeof resolver.resolve !== "function") return;
+          for (const el of document.querySelectorAll("code")) {
+            if (el.closest("pre")) continue; // 代码块内不处理
+            if (el.dataset.dshLj) continue; // 已处理过（1=补偿过，2=原生已有）
+            if (el.querySelector("button")) {
+              el.dataset.dshLj = "2";
+              continue;
+            }
+            const text = (el.textContent || "").trim();
+            if (!text || text.length > 300 || /[\r\n]/.test(text)) continue;
+            const parsed = parseTrailing(text);
+            let hit;
+            for (const candidate of candidatesOf(text, parsed)) {
+              hit = tryResolve(resolver, candidate);
+              if (hit) break;
+            }
+            if (!hit) continue; // 不标记：交付状态就绪后下轮再试
+            const owner = latestOwner;
+            const openPath = stripAll(text);
+            const line = parsed ? parsed.nums[parsed.nums.length - 1] : undefined;
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "dsh-lj-mention";
+            btn.title = hit.title || openPath;
+            btn.textContent = text; // 原生按钮还带一个文件图标，这里省略
+            btn.addEventListener("click", (ev) => {
+              ev.preventDefault();
+              try {
+                const r = owner.openFile(openPath, line === undefined ? undefined : { line });
+                if (r && typeof r.catch === "function") {
+                  r.catch(() => {
+                    try {
+                      owner.openFile(openPath);
+                    } catch {}
+                  });
+                }
+              } catch {
+                try {
+                  owner.openFile(openPath);
+                } catch {}
+              }
+            });
+            el.textContent = "";
+            el.appendChild(btn);
+            el.dataset.dshLj = "1";
+          }
+        } catch {}
+      }
+
       timer = setInterval(() => {
         let svc = null;
-        let err = null;
         try {
           svc = ctx.get("chatFileMentions");
-        } catch (e) {
-          err = e;
-        }
-        if (DEBUG && err !== null && err !== undefined) log("ctx.get error:", err && err.message);
-        if (!svc || svc.__dshLineJump || typeof svc.forClosing !== "function") {
-          if (DEBUG) log("poll: svc =", svc && "object", "patched =", !!(svc && svc.__dshLineJump));
+        } catch {
           return;
         }
+        if (!svc || svc.__dshLineJump || typeof svc.forClosing !== "function") return;
         const origForClosing = svc.forClosing;
         svc.forClosing = function wrapped(owner, sessionId) {
-          if (DEBUG) log("forClosing called; status =", owner?.turn?.status, "seq =", owner?.seq, "openFile =", typeof owner?.openFile);
+          // 记录最近一次渲染的载体，供 DOM 补偿层使用。
+          latestOwner = owner;
+          latestSessionId = sessionId;
           let resolver;
           try {
             resolver = origForClosing.call(this, owner, sessionId);
           } catch {
             return undefined;
           }
-          if (!resolver || typeof resolver.resolve !== "function") {
-            if (DEBUG) log("forClosing → no resolver (本轮无交付/产出文件)");
-            return resolver;
-          }
-          if (DEBUG) log("forClosing → resolver ready");
+          if (!resolver || typeof resolver.resolve !== "function") return resolver;
           return {
             resolve(value) {
               if (typeof value !== "string") return resolver.resolve(value);
@@ -103,28 +191,20 @@ window.__ModuleLoader__.load({
               // 逐级剥离尝试：`p:12:7707` → `p:12` → `p`，任一级命中交付
               // 集合即可点击（容忍交付路径本身带了 `:12` 之类的行号残留）。
               let hit;
-              const cands = candidatesOf(trimmed, parsed);
-              for (const candidate of cands) {
+              for (const candidate of candidatesOf(trimmed, parsed)) {
                 hit = tryResolve(resolver, candidate);
                 if (hit) break;
               }
-              if (DEBUG) log("resolve:", JSON.stringify(trimmed), "candidates:", JSON.stringify(cands), "→", hit ? "HIT" : "inert");
               if (!hit) return undefined;
-              // 打开用完全剥离后的真实路径；行号取最后一段数字
-              // （`p:7665` → 7665；`p:12:7707` → 7707）。
+              // 打开用完全剥离后的真实路径；行号取最后一段数字。
               const openPath = stripAll(trimmed);
               const line = parsed.nums[parsed.nums.length - 1];
               return Object.assign({}, hit, {
                 open() {
                   try {
-                    // chat 侧 openFile 的实现签名是 (path, options?)，
-                    // options.line 由 openResource 转给预览面板滚动定位。
-                    // TurnTail 侧类型标注只有 (path)，运行时是同一函数。
                     const r = owner.openFile(openPath, { line });
                     if (r && typeof r.catch === "function") {
                       r.catch(() => {
-                        // 带行号打开失败（如该类型渲染器不支持行导航）：
-                        // 退回不带行号的原生打开。
                         try {
                           hit.open();
                         } catch {}
@@ -142,25 +222,22 @@ window.__ModuleLoader__.load({
         };
         try {
           svc.__dshLineJump = true;
-          if (DEBUG) log("patched chatFileMentions ✔");
-        } catch (e) {
-          if (DEBUG) log("patch failed:", e && e.message);
-        }
+          console.info("[line-jump] patched chatFileMentions; DOM 补偿扫描已启动");
+          clearInterval(timer);
+          timer = null;
+          injectStyle();
+          scanTimer = setInterval(scan, SCAN_MS);
+          scan();
+        } catch {}
       }, POLL_MS);
       try {
         // cordis effect 约定：立即执行回调、返回值作为清理函数——
         // 所以这里必须返回一个 disposer，而不是直接 clearInterval。
-        ctx.effect(() => () => clearInterval(timer));
+        ctx.effect(() => () => {
+          if (timer) clearInterval(timer);
+          if (scanTimer) clearInterval(scanTimer);
+        });
       } catch {}
-    }
-
-    function stripAll(value) {
-      let s = value;
-      for (;;) {
-        const p = parseTrailing(s);
-        if (!p) return s;
-        s = p.path;
-      }
     }
 
     exports.apply = apply;
